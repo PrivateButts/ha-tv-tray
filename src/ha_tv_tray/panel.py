@@ -36,23 +36,6 @@ log = logging.getLogger("ha-tv-tray")
 CORNER_RADIUS = 8
 SHADOW_MARGIN = 14
 
-# ---------------------------------------------------------------------------
-# Native KDE tray  (KStatusNotifierItem via system-site-packages)
-# ---------------------------------------------------------------------------
-
-_HAS_KDE_TRAY = False
-KSNI = None
-
-try:
-    from KStatusNotifierItem import KStatusNotifierItem as _K
-
-    _HAS_KDE_TRAY = True
-    KSNI = _K
-except ImportError:
-    pass
-
-# ---------------------------------------------------------------------------
-
 
 class AuthInterceptor(QWebEngineUrlRequestInterceptor):
     def __init__(self, ha_url: str, token: str) -> None:
@@ -282,52 +265,18 @@ class SystrayApp:
         quit_act = self._tray_menu.addAction("Quit")
         quit_act.triggered.connect(self._quit)
 
-        if _HAS_KDE_TRAY:
-            self._init_kde_tray()
-        else:
-            self._init_qt_tray()
+        self._init_tray()
 
-    # -- KDE native tray ----------------------------------------------------
-
-    def _init_kde_tray(self) -> None:
-        self._kde = KSNI("ha-tv-tray")
-        self._kde.setIconByName("video-television")
-        self._kde.setToolTipTitle("TV Remote")
-        self._kde.setToolTipSubTitle("Click to open remote")
-        self._kde.setStatus(KSNI.Active)
-        self._kde.setContextMenu(self._tray_menu)
-        self._kde.activateRequested.connect(self._on_kde_activate)
-        self._kde.secondaryActivateRequested.connect(
-            lambda pos: self._tray_menu.exec(pos)
-        )
-        log.info("using KStatusNotifierItem (native KDE tray)")
-
-    def _on_kde_activate(self, active: bool, pos: QPoint) -> None:
-        log.debug("kde activate: active=%s  pos=(%d,%d)", active, pos.x(), pos.y())
-
-        if not active:
-            self.panel.hide_slide()
-            return
-
-        if pos.isNull():
-            self.panel.position_default()
-        else:
-            self.panel.position_near(pos)
-
-        self.panel.show_slide()
-
-    # -- Qt fallback tray ---------------------------------------------------
-
-    def _init_qt_tray(self) -> None:
+    def _init_tray(self) -> None:
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(self._make_icon())
         self.tray.setToolTip("TV Remote")
-        self.tray.activated.connect(self._on_qt_activated)
+        self.tray.activated.connect(self._on_tray_activated)
         self.tray.setContextMenu(self._tray_menu)
         QTimer.singleShot(0, self.tray.show)
-        log.info("using QSystemTrayIcon (fallback)")
+        log.info("tray icon shown")
 
-    def _on_qt_activated(self, reason: int) -> None:
+    def _on_tray_activated(self, reason: int) -> None:
         log.debug("qt tray activated: reason=%d", reason)
         if reason == QSystemTrayIcon.Context:
             self._tray_menu.exec(QCursor.pos())
