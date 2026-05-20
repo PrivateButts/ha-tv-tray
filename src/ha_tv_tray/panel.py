@@ -246,6 +246,13 @@ class SystrayApp:
         log.info("session type: %s", os.environ.get("XDG_SESSION_TYPE", "unknown"))
         log.info("Qt platform: %s", QApplication.platformName())
 
+        # QtWebEngine Chromium flags — set before any WebEngine init
+        os.environ.setdefault(
+            "QTWEBENGINE_CHROMIUM_FLAGS",
+            "--disable-gpu --disable-accelerated-2d-canvas --no-sandbox",
+        )
+        os.environ.setdefault("QT_QUICK_BACKEND", "software")
+
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("HA TV Tray")
         self.app.setOrganizationName("ha-tv-tray")
@@ -253,11 +260,7 @@ class SystrayApp:
         self._setup_signal_handling()
         self._setup_tick_timer()
 
-        self.panel = RemotePanel(config)
-
-        self._click_catcher = ClickCatcher(self.panel)
-        self.app.installEventFilter(self._click_catcher)
-
+        # Tray and menu first (no WebEngine involved)
         self._tray_menu = QMenu()
         show_act = self._tray_menu.addAction("Show/Hide Remote")
         show_act.triggered.connect(self._toggle_panel)
@@ -265,7 +268,14 @@ class SystrayApp:
         quit_act = self._tray_menu.addAction("Quit")
         quit_act.triggered.connect(self._quit)
 
+        self._panel_ready = False
+        self.panel = None
+        self._click_catcher = None
+
         self._init_tray()
+
+        # Defer WebEngine init — GPU process may fail before event loop
+        QTimer.singleShot(0, lambda: self._init_panel(config))
 
     def _init_tray(self) -> None:
         self.tray = QSystemTrayIcon()
@@ -276,8 +286,19 @@ class SystrayApp:
         QTimer.singleShot(0, self.tray.show)
         log.info("tray icon shown")
 
+    def _init_panel(self, config) -> None:
+        log.info("initializing panel (deferred)")
+        self.panel = RemotePanel(config)
+        self._click_catcher = ClickCatcher(self.panel)
+        self.app.installEventFilter(self._click_catcher)
+        self._panel_ready = True
+        log.info("panel ready")
+
     def _on_tray_activated(self, reason: int) -> None:
-        log.debug("qt tray activated: reason=%d", reason)
+        log.debug("tray activated: reason=%d", reason)
+        if not self._panel_ready:
+            log.debug("panel not ready yet, ignoring")
+            return
         if reason == QSystemTrayIcon.Context:
             self._tray_menu.exec(QCursor.pos())
         elif reason in (
@@ -324,6 +345,8 @@ class SystrayApp:
         return QIcon(pixmap)
 
     def _toggle_panel(self) -> None:
+        if not self._panel_ready or self.panel is None:
+            return
         log.debug("toggle panel")
         if self.panel.isVisible():
             self.panel.hide_slide()
@@ -337,7 +360,8 @@ class SystrayApp:
 
     def _quit(self) -> None:
         log.info("quitting")
-        self.panel.close()
+        if self.panel is not None:
+            self.panel.close()
         self._tick_timer.stop()
         QTimer.singleShot(0, self.app.quit)
 

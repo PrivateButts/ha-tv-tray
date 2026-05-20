@@ -5,7 +5,7 @@ import sys
 from .config import load_config, write_config
 from .panel import SystrayApp
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
