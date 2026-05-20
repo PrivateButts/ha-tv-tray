@@ -114,3 +114,5 @@ uv run ha-tv-tray --config-url http://localhost:8123 --config-token eyJ...
 3. The panel embeds a QtWebEngine view pointing to your HA dashboard
 4. Auth is injected automatically (bearer token via request interceptor + localStorage)
 5. The universal-remote-card renders inside HA's frontend as designed
+
+

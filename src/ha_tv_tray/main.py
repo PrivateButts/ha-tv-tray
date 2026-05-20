@@ -1,4 +1,5 @@
 import argparse
+import logging
 import sys
 
 from .config import load_config, write_config
@@ -15,6 +16,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--config",
         "-c",
         help="Path to config.yaml (default: ~/.config/ha-tv-tray/config.yaml)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging",
     )
     parser.add_argument(
         "--version",
@@ -44,8 +50,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _bootstrap(args: argparse.Namespace) -> None:
-    from .config import CONFIG_DIR, CONFIG_FILE_NAME
-
     url = args.config_url.rstrip("/")
     token = args.config_token
     dash = args.config_dash_path or "/lovelace/tv"
@@ -61,6 +65,13 @@ def _bootstrap(args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
+    level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)s:%(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
     if args.config_url or args.config_token:
         if not args.config_url:
             print("Error: --config-url is required for bootstrap", file=sys.stderr)
@@ -75,8 +86,11 @@ def main(argv: list[str] | None = None) -> None:
         config = load_config(args.config)
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        print("Run \033[1mha-tv-tray --config-url ... --config-token ...\033[0m "
-              "to bootstrap.", file=sys.stderr)
+        print(
+            "Run \033[1mha-tv-tray --config-url ... --config-token ...\033[0m "
+            "to bootstrap.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     except (ValueError, KeyError) as e:
         print(f"Config error: {e}", file=sys.stderr)

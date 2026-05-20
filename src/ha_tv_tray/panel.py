@@ -1,13 +1,10 @@
 import json
+import logging
+import os
+import signal
 import sys
 
-from PySide6.QtCore import (
-    QPropertyAnimation,
-    QEasingCurve,
-    QRect,
-    QUrl,
-    Qt,
-)
+from PySide6.QtCore import QRect, QTimer, QUrl, Qt
 from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,6 +22,16 @@ from PySide6.QtWebEngineCore import (
 )
 
 from .config import Config
+
+log = logging.getLogger("ha-tv-tray")
+
+_REASON_NAMES = {
+    QSystemTrayIcon.Unknown: "Unknown",
+    QSystemTrayIcon.Context: "Context",
+    QSystemTrayIcon.DoubleClick: "DoubleClick",
+    QSystemTrayIcon.Trigger: "Trigger",
+    QSystemTrayIcon.MiddleClick: "MiddleClick",
+}
 
 
 class AuthInterceptor(QWebEngineUrlRequestInterceptor):
@@ -45,7 +52,6 @@ class RemotePanel(QMainWindow):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config = config
-        self._animating = False
 
         self.setWindowTitle("TV Remote")
         self.setWindowFlags(
@@ -78,9 +84,9 @@ class RemotePanel(QMainWindow):
             page.certificateError.connect(
                 lambda error: error.acceptCertificate()
             )
-        self.webview.load(
-            QUrl(f"{self.config.ha_url}{self.config.dashboard_path}")
-        )
+        url = f"{self.config.ha_url}{self.config.dashboard_path}"
+        log.info("loading HA dashboard: %s", url)
+        self.webview.load(QUrl(url))
 
     def _inject_auth_script(self, profile: QWebEngineProfile) -> None:
         tokens = {
@@ -124,79 +130,48 @@ class RemotePanel(QMainWindow):
         margin = 8
 
         if self.config.position == "top-right":
-            top = 26
-            self._target = QRect(screen.right() - w - margin, top, w, h)
-            self._start = QRect(screen.right() - w - margin, top, w, 0)
+            self._geo = QRect(screen.right() - w - margin, 26, w, h)
         else:
-            self._target = QRect(
+            self._geo = QRect(
                 screen.right() - w - margin,
                 screen.bottom() - h - margin,
                 w,
                 h,
             )
-            self._start = QRect(
-                screen.right() - w - margin,
-                screen.bottom() - margin,
-                w,
-                0,
-            )
-        self.setGeometry(self._target)
+
+        log.debug(
+            "panel geo: (%d, %d) %dx%d on screen %dx%d",
+            self._geo.x(), self._geo.y(),
+            self._geo.width(), self._geo.height(),
+            screen.width(), screen.height(),
+        )
 
     def show_slide(self) -> None:
-        self.setGeometry(self._start)
+        self.setGeometry(self._geo)
+        log.debug("showing panel at (%d, %d)", self._geo.x(), self._geo.y())
         self.show()
         self.raise_()
         self.activateWindow()
 
-        self._animate(self._start, self._target, hide_on_finish=False)
-
     def hide_slide(self) -> None:
-        close = QRect(
-            self._target.x(),
-            self._target.y(),
-            self._target.width(),
-            0,
-        )
-        self._animate(
-            self._target, close, hide_on_finish=True, duration_factor=0.5
-        )
-
-    def _animate(
-        self,
-        start: QRect,
-        end: QRect,
-        hide_on_finish: bool = False,
-        duration_factor: float = 1.0,
-    ) -> None:
-        if self._animating:
-            return
-        self._animating = True
-
-        anim = QPropertyAnimation(self, b"geometry")
-        anim.setDuration(int(self.config.slide_duration_ms * duration_factor))
-        anim.setStartValue(start)
-        anim.setEndValue(end)
-        anim.setEasingCurve(
-            QEasingCurve.OutCubic if not hide_on_finish else QEasingCurve.InCubic
-        )
-
-        if hide_on_finish:
-            anim.finished.connect(self.hide)
-
-        anim.finished.connect(self._on_anim_done)
-        anim.start()
-
-    def _on_anim_done(self) -> None:
-        self._animating = False
+        log.debug("hiding panel")
+        self.hide()
 
 
 class SystrayApp:
     def __init__(self, config: Config) -> None:
         self.config = config
 
+        platform = os.environ.get("XDG_SESSION_TYPE", "unknown")
+        log.info("session type: %s", platform)
+        log.info("Qt platform: %s", QApplication.platformName())
+
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("HA TV Tray")
         self.app.setOrganizationName("ha-tv-tray")
+
+        self._setup_signal_handling()
+        self._setup_tick_timer()
 
         self.panel = RemotePanel(config)
         self.tray = QSystemTrayIcon()
@@ -204,15 +179,35 @@ class SystrayApp:
         self.tray.setToolTip("TV Remote")
         self.tray.activated.connect(self._on_tray_activated)
 
-        menu = QMenu()
-        show_act = menu.addAction("Show/Hide Remote")
-        show_act.triggered.connect(self._toggle_panel)
-        menu.addSeparator()
-        quit_act = menu.addAction("Quit")
+        self._tray_menu = QMenu()
+        help_act = self._tray_menu.addAction("Show/Hide Remote")
+        help_act.triggered.connect(self._toggle_panel)
+        self._tray_menu.addSeparator()
+        quit_act = self._tray_menu.addAction("Quit")
         quit_act.triggered.connect(self._quit)
-        self.tray.setContextMenu(menu)
+        self.tray.setContextMenu(self._tray_menu)
 
+        # Wait for event loop before showing tray
+        QTimer.singleShot(0, self._init_tray)
+
+    def _setup_signal_handling(self) -> None:
+        for s in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(s, self._handle_signal)
+
+    def _handle_signal(self, signum: int, _frame) -> None:
+        log.warning("received signal %d, quitting", signum)
+        self._quit()
+
+    def _setup_tick_timer(self) -> None:
+        self._tick_timer = QTimer()
+        self._tick_timer.timeout.connect(lambda: None)
+        self._tick_timer.start(200)
+
+    def _init_tray(self) -> None:
         self.tray.show()
+        log.info("tray icon shown")
+        if not self.tray.isVisible():
+            log.warning("tray icon is NOT visible on attempt")
 
     def _make_icon(self) -> QIcon:
         icon = QIcon.fromTheme("video-television")
@@ -227,7 +222,6 @@ class SystrayApp:
         p = QPainter(pixmap)
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
-
         p.setBrush(QColor("#3a7bd5"))
         p.drawRoundedRect(3, 5, 26, 18, 3, 3)
         p.drawRect(12, 23, 8, 4)
@@ -237,24 +231,30 @@ class SystrayApp:
         return QIcon(pixmap)
 
     def _on_tray_activated(self, reason: int) -> None:
-        if reason == QSystemTrayIcon.Trigger:
+        name = _REASON_NAMES.get(reason, f"UNKNOWN({reason})")
+        log.debug("tray activated: %s", name)
+
+        if reason == QSystemTrayIcon.Context:
+            self._tray_menu.exec(self.tray.geometry().center())
+        elif reason in (
+            QSystemTrayIcon.Trigger,
+            QSystemTrayIcon.DoubleClick,
+            QSystemTrayIcon.Unknown,
+        ):
             self._toggle_panel()
-        elif reason == QSystemTrayIcon.Context:
-            menu = self.tray.contextMenu()
-            if menu:
-                menu.exec(self.tray.geometry().center())
 
     def _toggle_panel(self) -> None:
-        if self.panel._animating:
-            return
+        log.debug("toggle panel (visible=%s)", self.panel.isVisible())
         if self.panel.isVisible():
             self.panel.hide_slide()
         else:
             self.panel.show_slide()
 
     def _quit(self) -> None:
+        log.info("quitting")
         self.panel.close()
-        self.app.quit()
+        self._tick_timer.stop()
+        QTimer.singleShot(0, self.app.quit)
 
     def run(self) -> int:
         return self.app.exec()

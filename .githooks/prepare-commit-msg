@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""prepare-commit-msg hook: bump version in pyproject.toml.
+
+Bump logic:
+  - git commit -m: parse subject for conventional commit → major/minor/patch
+  - git commit (interactive): bump patch (message unknown yet)
+  - git commit --amend: skip (version already bumped in original commit)
+  - merge/squash: bump patch
+"""
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+PYPROJECT = REPO / "pyproject.toml"
+
+
+def detect_bump_type(message: str) -> str:
+    if not message:
+        return "patch"
+    if re.search(r"^(.*!|BREAKING CHANGE)", message):
+        return "major"
+    if re.match(r"^feat(\(.+\))?:", message):
+        return "minor"
+    if re.match(r"^fix(\(.+\))?:", message):
+        return "patch"
+    return "patch"
+
+
+def bump_version(version: str, bump_type: str) -> str:
+    parts = [int(p) for p in version.split(".")]
+    while len(parts) < 3:
+        parts.append(0)
+    major, minor, patch = parts[:3]
+
+    if bump_type == "major":
+        return f"{major + 1}.0.0"
+    elif bump_type == "minor":
+        return f"{major}.{minor + 1}.0"
+    else:
+        return f"{major}.{minor}.{patch + 1}"
+
+
+def main():
+    if not PYPROJECT.exists():
+        sys.exit(0)
+
+    msg_file = Path(sys.argv[1])
+    source = sys.argv[2] if len(sys.argv) > 2 else ""
+
+    # Don't bump on amend (the original commit already bumped)
+    if source == "commit":
+        sys.exit(0)
+
+    # For -m, read the actual commit subject
+    # For interactive (no source) or others, bump patch conservatively
+    if source == "message":
+        msg = (msg_file.read_text() or "").strip().split("\n")[0]
+        bump = detect_bump_type(msg)
+    else:
+        bump = "patch"
+
+    content = PYPROJECT.read_text()
+    m = re.search(r'^version\s*=\s*"([^"]+)"', content, re.MULTILINE)
+    if not m:
+        sys.exit(0)
+
+    old = m.group(1)
+    new = bump_version(old, bump)
+
+    content = content.replace(f'version = "{old}"', f'version = "{new}"', 1)
+    PYPROJECT.write_text(content)
+    subprocess.run(["git", "add", "pyproject.toml"], check=True)
+
+    src_label = source or "interactive"
+    print(f"prepare-commit-msg: {old} → {new}  (bump={bump}, source={src_label})")
+
+
+if __name__ == "__main__":
+    main()
