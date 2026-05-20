@@ -14,7 +14,7 @@ from PySide6.QtCore import (
     QUrl,
     Qt,
 )
-from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap, QPainterPath, QCursor
+from PySide6.QtGui import QIcon, QPixmap, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -33,8 +33,7 @@ from .config import Config
 
 log = logging.getLogger("ha-tv-tray")
 
-CORNER_RADIUS = 8
-SHADOW_MARGIN = 14
+
 
 
 class AuthInterceptor(QWebEngineUrlRequestInterceptor):
@@ -81,7 +80,11 @@ class RemotePanel(QWidget):
             | Qt.Tool
         )
         self.setAttribute(Qt.WA_DeleteOnClose, False)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        self.setStyleSheet(
+            "RemotePanel { background: palette(window); "
+            "border: 1px solid palette(mid); }"
+        )
 
         self._setup_webview()
         self._setup_ui()
@@ -137,47 +140,13 @@ class RemotePanel(QWidget):
         profile.setUrlRequestInterceptor(interceptor)
 
     def _setup_ui(self) -> None:
-        m = SHADOW_MARGIN
-        self._inner = QWidget(self)
-        self._inner.setObjectName("popup-body")
-        self._inner.setStyleSheet(
-            f"""
-            #popup-body {{
-                background: palette(window);
-                border: 1px solid palette(mid);
-                border-radius: {CORNER_RADIUS}px;
-            }}
-            """
-        )
-        self._inner.setGeometry(
-            m, m,
-            self.config.panel_width,
-            self.config.panel_height,
-        )
-
-        layout = QVBoxLayout(self._inner)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.webview)
 
     def content_size(self) -> tuple:
         return self.config.panel_width, self.config.panel_height
-
-    def paintEvent(self, event) -> None:
-        base = self.rect().adjusted(4, 4, -4, -4)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(Qt.NoPen)
-        for i in range(10, 0, -1):
-            c = QColor(0, 0, 0, 8 + i * 2)
-            painter.setBrush(c)
-            d = i * 2
-            painter.drawRoundedRect(
-                base.adjusted(-d, -d, d, d),
-                CORNER_RADIUS + 2,
-                CORNER_RADIUS + 2,
-            )
-        painter.end()
 
     def show_slide(self) -> None:
         self.show()
@@ -186,9 +155,7 @@ class RemotePanel(QWidget):
         self._fade_in()
 
     def position_near(self, pos: QPoint) -> None:
-        cw, ch = self.content_size()
-        w = cw + SHADOW_MARGIN * 2
-        h = ch + SHADOW_MARGIN * 2
+        w, h = self.content_size()
         margin = 8
         screen = QApplication.primaryScreen().availableGeometry()
 
@@ -205,9 +172,7 @@ class RemotePanel(QWidget):
             wh.setPosition(QPoint(x, y))
 
     def position_default(self) -> None:
-        cw, ch = self.content_size()
-        w = cw + SHADOW_MARGIN * 2
-        h = ch + SHADOW_MARGIN * 2
+        w, h = self.content_size()
         margin = 8
         screen = QApplication.primaryScreen().availableGeometry()
         if self.config.position == "top-right":
@@ -245,13 +210,6 @@ class SystrayApp:
 
         log.info("session type: %s", os.environ.get("XDG_SESSION_TYPE", "unknown"))
         log.info("Qt platform: %s", QApplication.platformName())
-
-        # QtWebEngine Chromium flags — set before any WebEngine init
-        os.environ.setdefault(
-            "QTWEBENGINE_CHROMIUM_FLAGS",
-            "--disable-gpu --disable-accelerated-2d-canvas --no-sandbox",
-        )
-        os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("HA TV Tray")
