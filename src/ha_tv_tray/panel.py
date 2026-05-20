@@ -14,7 +14,7 @@ from PySide6.QtCore import (
     QUrl,
     Qt,
 )
-from PySide6.QtGui import QIcon, QColor, QPixmap, QCursor
+from PySide6.QtGui import QIcon, QPixmap, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -92,25 +92,26 @@ class RemotePanel(QWidget):
     def _setup_webview(self) -> None:
         profile = QWebEngineProfile.defaultProfile()
         profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
-        profile.setHttpUserAgent(
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) QtWebEngine/6.0 Chrome/120.0"
-        )
 
         self._inject_auth_script(profile)
         self._setup_interceptor(profile)
 
         self.webview = QWebEngineView()
         page = self.webview.page()
-        if hasattr(page, "backgroundColor"):
-            page.setBackgroundColor(QColor(0, 0, 0, 240))
-        if hasattr(page, "certificateError"):
-            page.certificateError.connect(
-                lambda error: error.acceptCertificate()
-            )
-        url = f"{self.config.ha_url}{self.config.dashboard_path}"
-        log.info("loading HA dashboard: %s", url)
-        self.webview.load(QUrl(url))
+        page.certificateError.connect(
+            lambda error: error.acceptCertificate()
+        )
+        # Load URL deferred — avoids SIGTRAP during init on some GPU configs
+        self._load_url = f"{self.config.ha_url}{self.config.dashboard_path}"
+        QTimer.singleShot(0, self._do_load)
+
+    def _do_load(self) -> None:
+        log.info("loading HA dashboard: %s", self._load_url)
+        self.webview.page().loadFinished.connect(self._on_page_loaded)
+        self.webview.load(QUrl(self._load_url))
+
+    def _on_page_loaded(self, ok: bool) -> None:
+        log.info("page loaded: ok=%s", ok)
 
     def _inject_auth_script(self, profile: QWebEngineProfile) -> None:
         tokens = {
@@ -205,8 +206,9 @@ class RemotePanel(QWidget):
 
 
 class SystrayApp:
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, browser_mode: bool = False) -> None:
         self.config = config
+        self._browser_mode = browser_mode
 
         log.info("session type: %s", os.environ.get("XDG_SESSION_TYPE", "unknown"))
         log.info("Qt platform: %s", QApplication.platformName())
@@ -245,6 +247,10 @@ class SystrayApp:
         log.info("tray icon shown")
 
     def _init_panel(self, config) -> None:
+        if self._browser_mode:
+            log.info("browser mode — no panel needed")
+            self._panel_ready = True
+            return
         log.info("initializing panel (deferred)")
         self.panel = RemotePanel(config)
         self._click_catcher = ClickCatcher(self.panel)
@@ -303,6 +309,12 @@ class SystrayApp:
         return QIcon(pixmap)
 
     def _toggle_panel(self) -> None:
+        if self._browser_mode:
+            import webbrowser
+            url = f"{self.config.ha_url}{self.config.dashboard_path}"
+            log.info("opening browser: %s", url)
+            webbrowser.open(url)
+            return
         if not self._panel_ready or self.panel is None:
             return
         log.debug("toggle panel")

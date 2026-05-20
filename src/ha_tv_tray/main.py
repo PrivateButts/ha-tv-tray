@@ -5,7 +5,7 @@ import sys
 from .config import load_config, write_config
 from .panel import SystrayApp
 
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -21,6 +21,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--debug",
         action="store_true",
         help="Enable debug logging",
+    )
+    parser.add_argument(
+        "--browser",
+        action="store_true",
+        help="Open HA dashboard in system browser instead of embedded panel",
     )
     parser.add_argument(
         "--version",
@@ -96,7 +101,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Config error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    app = SystrayApp(config)
+    app = SystrayApp(config, browser_mode=args.browser)
     sys.exit(app.run())
 
 
