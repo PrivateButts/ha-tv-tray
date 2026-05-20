@@ -1,0 +1,24 @@
+# ha-tv-tray configuration
+# Copy to ~/.config/ha-tv-tray/config.yaml or run from project root.
+# Quick bootstrap: ha-tv-tray --config-url URL --config-token TOKEN
+
+# Home Assistant instance URL
+ha_url: "http://homeassistant.local:8123"
+
+# Long-Lived Access Token — generate at your HA profile page
+# Settings → Security → Long-Lived Access Tokens
+# Can also be set via the HA_TOKEN environment variable.
+ha_token: "eyJ..."
+
+# Lovelace dashboard path where universal-remote-card is configured
+dashboard_path: "/lovelace/tv"
+
+# Panel dimensions (pixels)
+panel_width: 400
+panel_height: 680
+
+# Slide animation duration (milliseconds)
+slide_duration_ms: 400
+
+# Position on screen: "bottom-right" (default, slides up) or "top-right" (slides down)
+position: "bottom-right"
