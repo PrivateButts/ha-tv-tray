@@ -20,7 +20,7 @@ uv tool install .
 pipx install .
 
 # Or from git
-pipx install git+https://github.com/you/ha-tv-tray.git
+pipx install git+https://github.com/PrivateButts/ha-tv-tray.git
 ```
 
 > **Optional:** Pre-installing PySide6 via pacman avoids pulling it from PyPI:
