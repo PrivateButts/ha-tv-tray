@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""prepare-commit-msg hook: bump version in pyproject.toml.
+"""Bump version in pyproject.toml on explicit `git commit -m`.
 
-Bump logic:
-  - git commit -m: parse subject for conventional commit → major/minor/patch
-  - git commit (interactive): bump patch (message unknown yet)
-  - git commit --amend: skip (version already bumped in original commit)
-  - merge/squash: bump patch
+Only acts during `git commit -m "msg"`.  Silent.  Skips during
+rebase, merge, interactive commit, and amend.
 """
 
 import re
@@ -17,65 +14,51 @@ REPO = Path(__file__).resolve().parent.parent
 PYPROJECT = REPO / "pyproject.toml"
 
 
-def detect_bump_type(message: str) -> str:
-    if not message:
-        return "patch"
-    if re.search(r"^(.*!|BREAKING CHANGE)", message):
+def _bump_type(msg: str) -> str:
+    if re.search(r"^(.*!|BREAKING CHANGE)", msg):
         return "major"
-    if re.match(r"^feat(\(.+\))?:", message):
+    if re.match(r"^feat(\(.+\))?:", msg):
         return "minor"
-    if re.match(r"^fix(\(.+\))?:", message):
-        return "patch"
     return "patch"
 
 
-def bump_version(version: str, bump_type: str) -> str:
-    parts = [int(p) for p in version.split(".")]
+def _bump(ver: str, kind: str) -> str:
+    parts = [int(p) for p in ver.split(".")]
     while len(parts) < 3:
         parts.append(0)
-    major, minor, patch = parts[:3]
-
-    if bump_type == "major":
-        return f"{major + 1}.0.0"
-    elif bump_type == "minor":
-        return f"{major}.{minor + 1}.0"
-    else:
-        return f"{major}.{minor}.{patch + 1}"
+    m, n, p = parts[:3]
+    if kind == "major":
+        return f"{m + 1}.0.0"
+    if kind == "minor":
+        return f"{m}.{n + 1}.0"
+    return f"{m}.{n}.{p + 1}"
 
 
 def main():
     if not PYPROJECT.exists():
-        sys.exit(0)
+        return
 
-    msg_file = Path(sys.argv[1])
     source = sys.argv[2] if len(sys.argv) > 2 else ""
 
-    # Don't bump on amend (the original commit already bumped)
-    if source == "commit":
-        sys.exit(0)
+    # Only act on explicit `git commit -m "..."` — skip rebase,
+    # merge, interactive, amend, etc.
+    if source != "message":
+        return
 
-    # For -m, read the actual commit subject
-    # For interactive (no source) or others, bump patch conservatively
-    if source == "message":
-        msg = (msg_file.read_text() or "").strip().split("\n")[0]
-        bump = detect_bump_type(msg)
-    else:
-        bump = "patch"
+    msg = Path(sys.argv[1]).read_text().strip().split("\n")[0]
+    kind = _bump_type(msg)
 
-    content = PYPROJECT.read_text()
-    m = re.search(r'^version\s*=\s*"([^"]+)"', content, re.MULTILINE)
+    text = PYPROJECT.read_text()
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
     if not m:
-        sys.exit(0)
+        return
 
     old = m.group(1)
-    new = bump_version(old, bump)
+    new = _bump(old, kind)
 
-    content = content.replace(f'version = "{old}"', f'version = "{new}"', 1)
-    PYPROJECT.write_text(content)
+    text = text.replace(f'version = "{old}"', f'version = "{new}"', 1)
+    PYPROJECT.write_text(text)
     subprocess.run(["git", "add", "pyproject.toml"], check=True)
-
-    src_label = source or "interactive"
-    print(f"prepare-commit-msg: {old} → {new}  (bump={bump}, source={src_label})")
 
 
 if __name__ == "__main__":
