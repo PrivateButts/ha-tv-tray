@@ -14,7 +14,7 @@ from PySide6.QtCore import (
     QUrl,
     Qt,
 )
-from PySide6.QtGui import QIcon, QPixmap, QCursor
+from PySide6.QtGui import QIcon, QColor, QPixmap, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -253,7 +253,7 @@ class SystrayApp:
         log.info("panel ready")
 
     def _on_tray_activated(self, reason: int) -> None:
-        log.debug("tray activated: reason=%d", reason)
+        log.debug("tray activated: reason=%s", reason.name if hasattr(reason, "name") else reason)
         if not self._panel_ready:
             log.debug("panel not ready yet, ignoring")
             return
