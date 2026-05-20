@@ -1,6 +1,7 @@
 # ha-tv-tray
 
-KDE system tray TV remote control via Home Assistant. Shows a slide-out panel with your universal-remote-card dashboard.
+KDE system tray TV remote control via Home Assistant. Shows a Plasma-style popup
+with your universal-remote-card dashboard.
 
 ## Requirements
 
@@ -10,65 +11,34 @@ KDE system tray TV remote control via Home Assistant. Shows a slide-out panel wi
 
 ## Install
 
-Dependencies are managed by UV/pip — no system packages required.
-
 ```bash
-# Install from local checkout with uv
-uv tool install .
+sudo pacman -S pyside6 python-yaml
 
-# Or via pipx
-pipx install .
+git clone https://github.com/PrivateButts/ha-tv-tray.git
+cd ha-tv-tray
 
-# Or from git
-pipx install git+https://github.com/PrivateButts/ha-tv-tray.git
+uv tool install --no-deps . && uv tool install --reinstall pyyaml
+# Or with pipx:
+# pipx install . --no-deps
 ```
 
-> **Optional:** Pre-installing PySide6 via pacman avoids pulling it from PyPI:
-> ```
-> sudo pacman -S pyside6 python-yaml
-> ```
+`pyside6` and `python-yaml` are system packages on Arch. The app uses
+`KStatusNotifierItem` for native KDE tray integration (auto-detected at runtime).
 
 ## Quick Start
-
-Bootstrap config in one command:
 
 ```bash
 ha-tv-tray \
   --config-url http://homeassistant.local:8123 \
   --config-token eyJ... \
   --config-dash-path /lovelace/tv
-```
 
-Then run:
-
-```bash
 ha-tv-tray
 ```
 
-## Manual Setup
-
-1. **Create a TV remote dashboard** in Home Assistant with universal-remote-card.
-
-2. **Generate a Long-Lived Access Token**:
-   - HA Profile → Security → Long-Lived Access Tokens → Create Token
-
-3. **Create config** at `~/.config/ha-tv-tray/config.yaml`:
-
-```yaml
-ha_url: "http://homeassistant.local:8123"
-ha_token: "eyJ..."
-dashboard_path: "/lovelace/tv"
-```
-
-4. **Run**: `ha-tv-tray`
-
-## Usage
-
-- **Left-click** tray icon → toggle slide-out panel
-- **Right-click** tray icon → menu (Show/Hide, Quit)
-- Panel slides up from bottom-right (or down from top-right)
-
 ## Configuration
+
+`~/.config/ha-tv-tray/config.yaml`:
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -77,13 +47,12 @@ dashboard_path: "/lovelace/tv"
 | `dashboard_path` | `/lovelace/tv` | Dashboard path with the remote card |
 | `panel_width` | `400` | Panel width in pixels |
 | `panel_height` | `680` | Panel height in pixels |
-| `slide_duration_ms` | `400` | Slide animation duration |
-| `position` | `bottom-right` | `bottom-right` or `top-right` |
+| `position` | `bottom-right` | Fallback if click position unavailable |
 
 ## CLI
 
 ```
-ha-tv-tray [--config PATH] [--version]
+ha-tv-tray [--config PATH] [--debug] [--version]
 
 Bootstrap:
   --config-url URL         Home Assistant URL
@@ -94,25 +63,16 @@ Bootstrap:
 ## Development
 
 ```bash
-git clone <repo>
-cd ha-tv-tray
-
-# Create venv and install
-uv sync
-
-# Run
-uv run ha-tv-tray
-
-# Bootstrap
-uv run ha-tv-tray --config-url http://localhost:8123 --config-token eyJ...
+just setup       # uv sync + git hooks (uses system PySide6 via --system-site-packages)
+just run         # uv run ha-tv-tray
+just debug       # uv run ha-tv-tray --debug
 ```
 
 ## How It Works
 
-1. App starts → loads config → creates system tray icon
-2. On click, a frameless panel slides out from the screen edge
-3. The panel embeds a QtWebEngine view pointing to your HA dashboard
-4. Auth is injected automatically (bearer token via request interceptor + localStorage)
-5. The universal-remote-card renders inside HA's frontend as designed
-
-
+1. Uses **KStatusNotifierItem** for native KDE systray integration when available
+2. On click, receives **screen-coordinate click position** from the StatusNotifier D-Bus protocol
+3. Panel is positioned near the click (bottom-right or top-right of the screen)
+4. Falls back to `QSystemTrayIcon` (+ `QCursor.pos()` heuristic) if `KStatusNotifierItem` is not available
+5. Plasma-style popup: rounded corners, drop shadow, fade-in animation
+6. Auto-closes when clicking anywhere outside the panel

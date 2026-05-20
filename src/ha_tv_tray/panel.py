@@ -14,13 +14,7 @@ from PySide6.QtCore import (
     QUrl,
     Qt,
 )
-from PySide6.QtGui import (
-    QIcon,
-    QPainter,
-    QColor,
-    QPixmap,
-    QPainterPath,
-)
+from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap, QPainterPath, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -41,6 +35,23 @@ log = logging.getLogger("ha-tv-tray")
 
 CORNER_RADIUS = 8
 SHADOW_MARGIN = 14
+
+# ---------------------------------------------------------------------------
+# Native KDE tray  (KStatusNotifierItem via system-site-packages)
+# ---------------------------------------------------------------------------
+
+_HAS_KDE_TRAY = False
+KSNI = None
+
+try:
+    from KStatusNotifierItem import KStatusNotifierItem as _K
+
+    _HAS_KDE_TRAY = True
+    KSNI = _K
+except ImportError:
+    pass
+
+# ---------------------------------------------------------------------------
 
 
 class AuthInterceptor(QWebEngineUrlRequestInterceptor):
@@ -106,7 +117,7 @@ class RemotePanel(QWidget):
         self.webview = QWebEngineView()
         page = self.webview.page()
         if hasattr(page, "backgroundColor"):
-            page.setBackgroundColor(QColor(0, 0, 0, 0))
+            page.setBackgroundColor(QColor(0, 0, 0, 240))
         if hasattr(page, "certificateError"):
             page.certificateError.connect(
                 lambda error: error.acceptCertificate()
@@ -166,14 +177,11 @@ class RemotePanel(QWidget):
         layout.setSpacing(0)
         layout.addWidget(self.webview)
 
-    def _content_rect(self) -> QRect:
-        m = SHADOW_MARGIN
-        return QRect(m, m, self.config.panel_width, self.config.panel_height)
+    def content_size(self) -> tuple:
+        return self.config.panel_width, self.config.panel_height
 
     def paintEvent(self, event) -> None:
         base = self.rect().adjusted(4, 4, -4, -4)
-        path = QPainterPath()
-        path.addRoundedRect(base, CORNER_RADIUS + 2, CORNER_RADIUS + 2)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
@@ -189,38 +197,46 @@ class RemotePanel(QWidget):
         painter.end()
 
     def show_slide(self) -> None:
-        self._position_and_show()
+        self.show()
+        self.raise_()
+        self.activateWindow()
         self._fade_in()
+
+    def position_near(self, pos: QPoint) -> None:
+        cw, ch = self.content_size()
+        w = cw + SHADOW_MARGIN * 2
+        h = ch + SHADOW_MARGIN * 2
+        margin = 8
+        screen = QApplication.primaryScreen().availableGeometry()
+
+        near_right = pos.x() > screen.width() // 2
+        near_bottom = pos.y() > screen.height() // 2
+
+        x = screen.right() - w - margin if near_right else margin
+        y = screen.bottom() - h - margin if near_bottom else 26
+
+        log.debug("position near (%d,%d) → (%d,%d)", pos.x(), pos.y(), x, y)
+        self.setGeometry(QRect(x, y, w, h))
+        wh = self.windowHandle()
+        if wh is not None:
+            wh.setPosition(QPoint(x, y))
+
+    def position_default(self) -> None:
+        cw, ch = self.content_size()
+        w = cw + SHADOW_MARGIN * 2
+        h = ch + SHADOW_MARGIN * 2
+        margin = 8
+        screen = QApplication.primaryScreen().availableGeometry()
+        if self.config.position == "top-right":
+            self.setGeometry(QRect(screen.right() - w - margin, 26, w, h))
+        else:
+            self.setGeometry(
+                QRect(screen.right() - w - margin, screen.bottom() - h - margin, w, h)
+            )
 
     def hide_slide(self) -> None:
         log.debug("hiding panel")
         self.hide()
-
-    def _position_and_show(self) -> None:
-        cr = self._content_rect()
-        total_w = cr.width() + SHADOW_MARGIN * 2
-        total_h = cr.height() + SHADOW_MARGIN * 2
-
-        screen = QApplication.primaryScreen().availableGeometry()
-        margin = 8
-
-        if self.config.position == "top-right":
-            x = screen.right() - total_w - margin
-            y = 26
-        else:
-            x = screen.right() - total_w - margin
-            y = screen.bottom() - total_h - margin
-
-        self.setGeometry(QRect(x, y, total_w, total_h))
-        log.debug("showing panel at (%d, %d) %dx%d", x, y, total_w, total_h)
-        self.show()
-        self.raise_()
-        self.activateWindow()
-
-        # On Wayland, KWin may override position; try window handle
-        wh = self.windowHandle()
-        if wh is not None:
-            wh.setPosition(QPoint(x, y))
 
     def _fade_in(self) -> None:
         if self._fading:
@@ -235,12 +251,16 @@ class RemotePanel(QWidget):
         anim.start()
 
 
+# ---------------------------------------------------------------------------
+# SystrayApp
+# ---------------------------------------------------------------------------
+
+
 class SystrayApp:
     def __init__(self, config: Config) -> None:
         self.config = config
 
-        platform = os.environ.get("XDG_SESSION_TYPE", "unknown")
-        log.info("session type: %s", platform)
+        log.info("session type: %s", os.environ.get("XDG_SESSION_TYPE", "unknown"))
         log.info("Qt platform: %s", QApplication.platformName())
 
         self.app = QApplication(sys.argv)
@@ -255,20 +275,70 @@ class SystrayApp:
         self._click_catcher = ClickCatcher(self.panel)
         self.app.installEventFilter(self._click_catcher)
 
-        self.tray = QSystemTrayIcon()
-        self.tray.setIcon(self._make_icon())
-        self.tray.setToolTip("TV Remote")
-        self.tray.activated.connect(self._on_tray_activated)
-
         self._tray_menu = QMenu()
         show_act = self._tray_menu.addAction("Show/Hide Remote")
         show_act.triggered.connect(self._toggle_panel)
         self._tray_menu.addSeparator()
         quit_act = self._tray_menu.addAction("Quit")
         quit_act.triggered.connect(self._quit)
-        self.tray.setContextMenu(self._tray_menu)
 
-        QTimer.singleShot(0, self._init_tray)
+        if _HAS_KDE_TRAY:
+            self._init_kde_tray()
+        else:
+            self._init_qt_tray()
+
+    # -- KDE native tray ----------------------------------------------------
+
+    def _init_kde_tray(self) -> None:
+        self._kde = KSNI("ha-tv-tray")
+        self._kde.setIconByName("video-television")
+        self._kde.setToolTipTitle("TV Remote")
+        self._kde.setToolTipSubTitle("Click to open remote")
+        self._kde.setStatus(KSNI.Active)
+        self._kde.setContextMenu(self._tray_menu)
+        self._kde.activateRequested.connect(self._on_kde_activate)
+        self._kde.secondaryActivateRequested.connect(
+            lambda pos: self._tray_menu.exec(pos)
+        )
+        log.info("using KStatusNotifierItem (native KDE tray)")
+
+    def _on_kde_activate(self, active: bool, pos: QPoint) -> None:
+        log.debug("kde activate: active=%s  pos=(%d,%d)", active, pos.x(), pos.y())
+
+        if not active:
+            self.panel.hide_slide()
+            return
+
+        if pos.isNull():
+            self.panel.position_default()
+        else:
+            self.panel.position_near(pos)
+
+        self.panel.show_slide()
+
+    # -- Qt fallback tray ---------------------------------------------------
+
+    def _init_qt_tray(self) -> None:
+        self.tray = QSystemTrayIcon()
+        self.tray.setIcon(self._make_icon())
+        self.tray.setToolTip("TV Remote")
+        self.tray.activated.connect(self._on_qt_activated)
+        self.tray.setContextMenu(self._tray_menu)
+        QTimer.singleShot(0, self.tray.show)
+        log.info("using QSystemTrayIcon (fallback)")
+
+    def _on_qt_activated(self, reason: int) -> None:
+        log.debug("qt tray activated: reason=%d", reason)
+        if reason == QSystemTrayIcon.Context:
+            self._tray_menu.exec(QCursor.pos())
+        elif reason in (
+            QSystemTrayIcon.Trigger,
+            QSystemTrayIcon.DoubleClick,
+            QSystemTrayIcon.Unknown,
+        ):
+            self._toggle_panel()
+
+    # -- shared -------------------------------------------------------------
 
     def _setup_signal_handling(self) -> None:
         for s in (signal.SIGINT, signal.SIGTERM):
@@ -282,10 +352,6 @@ class SystrayApp:
         self._tick_timer = QTimer()
         self._tick_timer.timeout.connect(lambda: None)
         self._tick_timer.start(200)
-
-    def _init_tray(self) -> None:
-        self.tray.show()
-        log.info("tray icon shown")
 
     def _make_icon(self) -> QIcon:
         icon = QIcon.fromTheme("video-television")
@@ -308,22 +374,16 @@ class SystrayApp:
         p.end()
         return QIcon(pixmap)
 
-    def _on_tray_activated(self, reason: int) -> None:
-        log.debug("tray activated: reason=%d", reason)
-        if reason == QSystemTrayIcon.Context:
-            self._tray_menu.exec(self.tray.geometry().center())
-        elif reason in (
-            QSystemTrayIcon.Trigger,
-            QSystemTrayIcon.DoubleClick,
-            QSystemTrayIcon.Unknown,
-        ):
-            self._toggle_panel()
-
     def _toggle_panel(self) -> None:
         log.debug("toggle panel")
         if self.panel.isVisible():
             self.panel.hide_slide()
         else:
+            cursor = QCursor.pos()
+            if cursor.x() != 0 or cursor.y() != 0:
+                self.panel.position_near(cursor)
+            else:
+                self.panel.position_default()
             self.panel.show_slide()
 
     def _quit(self) -> None:

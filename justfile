@@ -3,7 +3,11 @@ setup:
     uv sync
     git config core.hooksPath .githooks
 
-# Run the app (pass extra args after --, e.g. just run -- --debug)
+# Install system packages
+install-deps:
+    sudo pacman -S --needed pyside6 python-yaml
+
+# Run the app (pass extra args, e.g. just run -- --debug)
 run *args:
     uv run ha-tv-tray {{ args }}
 
