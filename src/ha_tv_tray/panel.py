@@ -7,7 +7,6 @@ import sys
 from PySide6.QtCore import (
     QEvent,
     QObject,
-    QPropertyAnimation,
     QPoint,
     QRect,
     QTimer,
@@ -71,7 +70,6 @@ class RemotePanel(QWidget):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config = config
-        self._fading = False
 
         self.setWindowTitle("TV Remote")
         self.setWindowFlags(
@@ -153,7 +151,6 @@ class RemotePanel(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
-        self._fade_in()
 
     def position_near(self, pos: QPoint) -> None:
         w, h = self.content_size()
@@ -186,19 +183,6 @@ class RemotePanel(QWidget):
     def hide_slide(self) -> None:
         log.debug("hiding panel")
         self.hide()
-
-    def _fade_in(self) -> None:
-        if self._fading:
-            return
-        self._fading = True
-        self.setWindowOpacity(0.0)
-        anim = QPropertyAnimation(self, b"windowOpacity")
-        anim.setDuration(150)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.finished.connect(lambda: setattr(self, "_fading", False))
-        anim.start()
-
 
 # ---------------------------------------------------------------------------
 # SystrayApp
