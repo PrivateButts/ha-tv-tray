@@ -23,6 +23,8 @@ from .config import Config
 
 log = logging.getLogger("ha-tv-tray")
 
+ESC_MARKER = "__ha_tv_tray_escape__"
+
 
 class AuthInterceptor(QWebEngineUrlRequestInterceptor):
     def __init__(self, ha_url: str, token: str) -> None:
@@ -54,9 +56,6 @@ class SystrayApp:
         self._setup_signal_handling()
         self._setup_tick_timer()
 
-        self.app.focusChanged.connect(self._on_focus_changed)
-        self.app.applicationStateChanged.connect(self._on_app_state)
-
         self._setup_webengine()
 
         self._tray_menu = QMenu()
@@ -73,23 +72,53 @@ class SystrayApp:
         self.tray.setContextMenu(self._tray_menu)
         QTimer.singleShot(0, self.tray.show)
 
+        # Poll active window — if None, user clicked outside our app
+        self._dismiss_timer = QTimer()
+        self._dismiss_timer.setInterval(150)
+        self._dismiss_timer.timeout.connect(self._check_dismiss)
+
         self._panel_open = False
         log.info("tray icon shown")
 
-    # -- WebEngine setup ----------------------------------------------------
+    # -- Dismissal ----------------------------------------------------------
 
     def _reset_panel(self) -> None:
         self._panel_open = False
+        self._dismiss_timer.stop()
 
-    def _on_focus_changed(self, old, new) -> None:
-        if self._panel_open and new is None:
-            log.debug("focus left app, closing popup")
+    def _check_dismiss(self) -> None:
+        if not self._panel_open:
+            self._dismiss_timer.stop()
+            return
+        if not self._popup.isVisible():
+            self._popup.close()
+            return
+        # activeWindow is None when no Qt window in our app has focus —
+        # happens when clicking the desktop or another application.
+        if QApplication.activeWindow() is None:
+            log.debug("no active window, closing popup")
             self._popup.close()
 
-    def _on_app_state(self, state: Qt.ApplicationState) -> None:
-        if self._panel_open and state == Qt.ApplicationInactive:
-            log.debug("app inactive, closing popup")
+    def _on_page_loaded(self, ok: bool) -> None:
+        log.info("page loaded: ok=%s", ok)
+        # Inject Escape handler — capture phase fires before Chromium's own handlers
+        if ok:
+            self.webview.page().runJavaScript(f"""
+                document.addEventListener('keydown', function(e) {{
+                    if (e.key === 'Escape') {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                        document.title = '{ESC_MARKER}';
+                    }}
+                }}, true);
+            """)
+
+    def _on_title_changed(self, title: str) -> None:
+        if title == ESC_MARKER and self._panel_open:
+            log.debug("Escape from webview, closing")
             self._popup.close()
+
+    # -- WebEngine setup ----------------------------------------------------
 
     def _setup_webengine(self) -> None:
         profile = QWebEngineProfile.defaultProfile()
@@ -106,10 +135,11 @@ class SystrayApp:
         page.certificateError.connect(
             lambda error: error.acceptCertificate()
         )
+        page.titleChanged.connect(self._on_title_changed)
+        page.loadFinished.connect(self._on_page_loaded)
 
         url = f"{self.config.ha_url}{self.config.dashboard_path}"
         log.info("loading HA dashboard: %s", url)
-        page.loadFinished.connect(self._on_page_loaded)
         self.webview.load(QUrl(url))
 
         self._popup = QMenu()
@@ -133,9 +163,6 @@ class SystrayApp:
                         context=Qt.ApplicationShortcut)
         esc.activated.connect(self._popup.close)
         esc.activatedAmbiguously.connect(self._popup.close)
-
-    def _on_page_loaded(self, ok: bool) -> None:
-        log.info("page loaded: ok=%s", ok)
 
     def _inject_auth_script(self, profile: QWebEngineProfile) -> None:
         tokens = {
@@ -226,13 +253,13 @@ class SystrayApp:
             log.debug("popup at (%d,%d)", x, y)
 
             self._panel_open = True
-            # exec() blocks. aboutToHide → _reset_panel fires before
-            # exec() returns, so _panel_open is set False by then.
+            self._dismiss_timer.start()
             self._popup.exec(QPoint(x, y))
 
     def _quit(self) -> None:
         log.info("quitting")
         self._tick_timer.stop()
+        self._dismiss_timer.stop()
         if self._popup:
             self._popup.close()
         QTimer.singleShot(0, self.app.quit)
