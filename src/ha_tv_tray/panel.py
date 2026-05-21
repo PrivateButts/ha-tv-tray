@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
     QMenu,
     QVBoxLayout,
+    QWidget,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import (
@@ -140,10 +141,12 @@ class RemoteWindow(QMainWindow):
         profile.setUrlRequestInterceptor(interceptor)
 
     def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        central = QWidget()
+        layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.webview)
+        self.setCentralWidget(central)
         self.setFixedSize(self.config.panel_width, self.config.panel_height)
 
     # -- Show / hide --------------------------------------------------------
@@ -192,6 +195,9 @@ class SystrayApp:
 
         self._setup_signal_handling()
         self._setup_tick_timer()
+
+        self.app.focusChanged.connect(self._on_focus_changed)
+        self.app.applicationStateChanged.connect(self._on_app_state)
 
         self.panel = RemoteWindow(config)
 
@@ -250,6 +256,16 @@ class SystrayApp:
             self.panel.hide_slide()
         else:
             self.panel.show_slide()
+
+    def _on_focus_changed(self, old, new) -> None:
+        if self.panel._panel_open and new is None:
+            log.debug("focus left app, closing")
+            self.panel.hide_slide()
+
+    def _on_app_state(self, state: Qt.ApplicationState) -> None:
+        if self.panel._panel_open and state == Qt.ApplicationInactive:
+            log.debug("app inactive, closing")
+            self.panel.hide_slide()
 
     def _setup_signal_handling(self) -> None:
         for s in (signal.SIGINT, signal.SIGTERM):
