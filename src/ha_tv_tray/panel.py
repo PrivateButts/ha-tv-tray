@@ -72,10 +72,8 @@ class SystrayApp:
         self.tray.setContextMenu(self._tray_menu)
         QTimer.singleShot(0, self.tray.show)
 
-        # Poll active window — if None, user clicked outside our app
-        self._dismiss_timer = QTimer()
-        self._dismiss_timer.setInterval(150)
-        self._dismiss_timer.timeout.connect(self._check_dismiss)
+        self.app.focusChanged.connect(self._on_focus_changed)
+        self.app.applicationStateChanged.connect(self._on_app_state)
 
         self._panel_open = False
         log.info("tray icon shown")
@@ -84,19 +82,15 @@ class SystrayApp:
 
     def _reset_panel(self) -> None:
         self._panel_open = False
-        self._dismiss_timer.stop()
 
-    def _check_dismiss(self) -> None:
-        if not self._panel_open:
-            self._dismiss_timer.stop()
-            return
-        if not self._popup.isVisible():
+    def _on_focus_changed(self, old, new) -> None:
+        if self._panel_open and new is None:
+            log.debug("focus left app, closing")
             self._popup.close()
-            return
-        # activeWindow is None when no Qt window in our app has focus —
-        # happens when clicking the desktop or another application.
-        if QApplication.activeWindow() is None:
-            log.debug("no active window, closing popup")
+
+    def _on_app_state(self, state: Qt.ApplicationState) -> None:
+        if self._panel_open and state == Qt.ApplicationInactive:
+            log.debug("app inactive, closing")
             self._popup.close()
 
     def _on_page_loaded(self, ok: bool) -> None:
@@ -252,14 +246,13 @@ class SystrayApp:
             y = screen.bottom() - h - margin
             log.debug("popup at (%d,%d)", x, y)
 
+            self._popup.popup(QPoint(x, y))
+            self.webview.setFocus()
             self._panel_open = True
-            self._dismiss_timer.start()
-            self._popup.exec(QPoint(x, y))
 
     def _quit(self) -> None:
         log.info("quitting")
         self._tick_timer.stop()
-        self._dismiss_timer.stop()
         if self._popup:
             self._popup.close()
         QTimer.singleShot(0, self.app.quit)
