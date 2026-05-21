@@ -56,29 +56,55 @@ class NativeClickCatcher(QAbstractNativeEventFilter):
         if not self.menu.isVisible():
             return (False, 0)
 
-        data = message  # sip.voidptr
-        ev_type = data[0] if hasattr(data, "__getitem__") else ord(bytes(data)[:1])
-        if ev_type != XCB_BUTTON_PRESS:
+        # message is sip.voidptr or int (raw pointer)
+        ev_type = self._read_event_type(message)
+        if ev_type is None or ev_type != XCB_BUTTON_PRESS:
             return (False, 0)
 
-        # xcb_button_press_event_t layout (32 bytes):
-        #   0: response_type (1) + detail (1) + sequence (2)
-        #   4: time (4) — xcb_timestamp_t
-        #   8: root (4)   — xcb_window_t
-        #  12: event (4)  — xcb_window_t  ← the window the event occurred on
-        event_raw = bytes(data) if hasattr(data, "__getitem__") else data
-
-        if len(event_raw) < 16:
+        raw = self._read_event_bytes(message)
+        if raw is None or len(raw) < 16:
             return (False, 0)
 
-        win_id = struct.unpack_from("<I", event_raw, 12)[0]
-        menu_win = int(self.menu.windowHandle().winId()) if self.menu.windowHandle() else 0
+        # xcb_button_press_event_t: event window ID at offset 12
+        win_id = struct.unpack_from("<I", raw, 12)[0]
+        menu_win = (
+            int(self.menu.windowHandle().winId())
+            if self.menu.windowHandle()
+            else 0
+        )
 
         if win_id and win_id != menu_win:
-            log.debug("native: click on window 0x%x (menu=0x%x), closing", win_id, menu_win)
+            log.debug("native: click on window 0x%x (menu=0x%x)", win_id, menu_win)
             QTimer.singleShot(0, self.menu.close)
 
         return (False, 0)
+
+    @staticmethod
+    def _read_event_type(msg) -> int | None:
+        """Safely read the first byte (XCB event type) from sip.voidptr or int."""
+        try:
+            return msg[0]
+        except TypeError:
+            pass
+        try:
+            return int(msg) & 0xFF
+        except (TypeError, ValueError):
+            pass
+        return None
+
+    @staticmethod
+    def _read_event_bytes(msg, n: int = 32) -> bytes | None:
+        """Safely read *n* bytes from sip.voidptr or int."""
+        try:
+            return msg.asstring(n)
+        except (AttributeError, TypeError):
+            pass
+        # Fallback: treat as sip.voidptr and index manually
+        try:
+            return bytes(msg[i] for i in range(n))
+        except (TypeError, AttributeError):
+            pass
+        return None
 
 
 class SystrayApp:
