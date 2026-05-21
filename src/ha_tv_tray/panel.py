@@ -4,14 +4,13 @@ import os
 import signal
 import sys
 
-from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint, QTimer, QUrl, Qt
 from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap, QCursor
 from PySide6.QtWidgets import (
     QApplication,
     QSystemTrayIcon,
     QMenu,
-    QVBoxLayout,
-    QWidget,
+    QWidgetAction,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import (
@@ -39,50 +38,37 @@ class AuthInterceptor(QWebEngineUrlRequestInterceptor):
             )
 
 
-class PopupDismissFilter(QObject):
-    """Closes the popup on click-outside, WindowDeactivate, or Escape."""
+class DismissFilter(QObject):
+    """Closes the menu on Escape (from webview) or WindowDeactivate."""
 
-    def __init__(self, popup: QWidget, webview: QWebEngineView) -> None:
-        super().__init__(popup)
-        self.popup = popup
+    def __init__(self, menu: QMenu, webview: QWebEngineView) -> None:
+        super().__init__(menu)
+        self.menu = menu
         webview.installEventFilter(self)
-        popup.installEventFilter(self)
 
     def eventFilter(self, obj, event) -> bool:
-        t = event.type()
-
-        # Escape from the webview
-        if (
-            t == QEvent.KeyPress
-            and event.key() == Qt.Key_Escape
-        ):
-            self.popup.close()
+        if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+            self.menu.close()
             return True
-
-        # Window deactivation (clicked another window, Alt+Tab, etc.)
-        if t == QEvent.WindowDeactivate and obj == self.popup:
-            self.popup.close()
-            return True
-
         return False
 
 
 class ClickCatcher(QObject):
-    """Application-level: close popup on any mouse press outside its rect."""
+    """Close menu on mouse press outside its geometry."""
 
-    def __init__(self, popup: QWidget) -> None:
+    def __init__(self, menu: QMenu) -> None:
         super().__init__()
-        self.popup = popup
+        self.menu = menu
 
     def eventFilter(self, obj, event) -> bool:
         if (
-            self.popup.isVisible()
+            self.menu.isVisible()
             and event.type() == QEvent.MouseButtonPress
         ):
             pos = event.globalPosition().toPoint()
-            if not self.popup.geometry().contains(pos):
-                log.debug("click outside popup, closing")
-                self.popup.close()
+            if not self.menu.geometry().contains(pos):
+                log.debug("click outside menu, closing")
+                self.menu.close()
         return False
 
 
@@ -144,23 +130,22 @@ class SystrayApp:
         page.loadFinished.connect(self._on_page_loaded)
         self.webview.load(QUrl(url))
 
-        self._popup = QWidget()
-        self._popup.setWindowFlags(
-            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-        )
-        self._popup.setAttribute(Qt.WA_DeleteOnClose, False)
+        self._popup = QMenu()
+        self._popup.setObjectName("remote-popup")
+        self._popup.setStyleSheet("""
+            #remote-popup {
+                border: 1px solid palette(mid);
+                background: palette(window);
+            }
+        """)
         self._popup.setFixedSize(
             self.config.panel_width, self.config.panel_height
         )
-        self._popup.setStyleSheet(
-            "QWidget { background: palette(window); "
-            "border: 1px solid palette(mid); }"
-        )
-        layout = QVBoxLayout(self._popup)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.webview)
+        action = QWidgetAction(self._popup)
+        action.setDefaultWidget(self.webview)
+        self._popup.addAction(action)
 
-        self._dismiss = PopupDismissFilter(self._popup, self.webview)
+        self._dismiss = DismissFilter(self._popup, self.webview)
         self._click_out = ClickCatcher(self._popup)
         self.app.installEventFilter(self._click_out)
 
@@ -256,8 +241,7 @@ class SystrayApp:
             y = screen.bottom() - h - margin
             log.debug("popup at (%d,%d)", x, y)
 
-            self._popup.move(x, y)
-            self._popup.show()
+            self._popup.popup(QPoint(x, y))
             self._panel_open = True
 
     def _quit(self) -> None:
