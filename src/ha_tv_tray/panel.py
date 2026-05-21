@@ -54,6 +54,8 @@ class SystrayApp:
         self._setup_signal_handling()
         self._setup_tick_timer()
 
+        self.app.focusChanged.connect(self._on_focus_changed)
+
         self._setup_webengine()
 
         self._tray_menu = QMenu()
@@ -77,20 +79,10 @@ class SystrayApp:
 
     def _reset_panel(self) -> None:
         self._panel_open = False
-        self._dismiss_timer.stop()
 
-    def _check_dismiss(self) -> None:
-        log.debug("tick: open=%s visible=%s", self._panel_open, self._popup.isVisible())
-        if not self._panel_open or not self._popup.isVisible():
-            self._dismiss_timer.stop()
-            return
-        cursor = QCursor.pos()
-        geo = self._popup.geometry()
-        log.debug("cursor=(%d,%d) geo=(%d,%d %dx%d)",
-                  cursor.x(), cursor.y(),
-                  geo.x(), geo.y(), geo.width(), geo.height())
-        if not geo.contains(cursor):
-            log.debug("cursor outside popup, closing")
+    def _on_focus_changed(self, old, new) -> None:
+        if self._panel_open and new is None:
+            log.debug("focus left app, closing popup")
             self._popup.close()
 
     def _setup_webengine(self) -> None:
@@ -130,11 +122,10 @@ class SystrayApp:
         self._popup.addAction(action)
 
         self._popup.aboutToHide.connect(self._reset_panel)
-        QShortcut(QKeySequence(Qt.Key_Escape), self._popup, self._popup.close)
 
-        self._dismiss_timer = QTimer()
-        self._dismiss_timer.setInterval(100)
-        self._dismiss_timer.timeout.connect(self._check_dismiss)
+        # Escape via ApplicationShortcut — fires on any keyboard input, not just when the menu has focus
+        QShortcut(QKeySequence(Qt.Key_Escape), self._popup, self._popup.close,
+                  context=Qt.ApplicationShortcut)
 
     def _on_page_loaded(self, ok: bool) -> None:
         log.info("page loaded: ok=%s", ok)
@@ -227,10 +218,10 @@ class SystrayApp:
             y = screen.bottom() - h - margin
             log.debug("popup at (%d,%d)", x, y)
 
-            self._popup.popup(QPoint(x, y))
-            self.webview.setFocus()
             self._panel_open = True
-            self._dismiss_timer.start()
+            # exec() blocks. aboutToHide → _reset_panel fires before
+            # exec() returns, so _panel_open is set False by then.
+            self._popup.exec(QPoint(x, y))
 
     def _quit(self) -> None:
         log.info("quitting")
