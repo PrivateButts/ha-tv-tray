@@ -4,7 +4,7 @@ import os
 import signal
 import sys
 
-from PySide6.QtCore import QTimer, QUrl, Qt
+from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt
 from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap, QCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -39,20 +39,63 @@ class AuthInterceptor(QWebEngineUrlRequestInterceptor):
             )
 
 
+class PopupDismissFilter(QObject):
+    """Closes the popup on click-outside, WindowDeactivate, or Escape."""
+
+    def __init__(self, popup: QDialog, webview: QWebEngineView) -> None:
+        super().__init__(popup)
+        self.popup = popup
+        webview.installEventFilter(self)
+        popup.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:
+        t = event.type()
+
+        # Escape from the webview
+        if (
+            t == QEvent.KeyPress
+            and event.key() == Qt.Key_Escape
+        ):
+            self.popup.close()
+            return True
+
+        # Window deactivation (clicked another window, Alt+Tab, etc.)
+        if t == QEvent.WindowDeactivate and obj == self.popup:
+            self.popup.close()
+            return True
+
+        return False
+
+
+class ClickCatcher(QObject):
+    """Application-level: close popup on any mouse press outside its rect."""
+
+    def __init__(self, popup: QDialog) -> None:
+        super().__init__()
+        self.popup = popup
+
+    def eventFilter(self, obj, event) -> bool:
+        if (
+            self.popup.isVisible()
+            and event.type() == QEvent.MouseButtonPress
+        ):
+            pos = event.globalPosition().toPoint()
+            if not self.popup.geometry().contains(pos):
+                log.debug("click outside popup, closing")
+                self.popup.close()
+        return False
+
+
 class SystrayApp:
     def __init__(self, config: Config) -> None:
         self.config = config
 
-        # On Wayland, xdg-shell blocks popups without a transient parent
-        # that has received input.  Our tray icon (D-Bus StatusNotifierItem)
-        # has no Wayland surface, so we force XCB via XWayland.
         if os.environ.get("XDG_SESSION_TYPE") == "wayland":
             os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
             log.info("Wayland detected, forcing Qt platform to xcb")
 
         self.app = QApplication(sys.argv)
         log.info("Qt platform: %s", QApplication.platformName())
-
         self.app.setApplicationName("HA TV Tray")
         self.app.setOrganizationName("ha-tv-tray")
 
@@ -81,7 +124,6 @@ class SystrayApp:
     # -- WebEngine setup ----------------------------------------------------
 
     def _setup_webengine(self) -> None:
-        """Create the web view once, embed it in a popup menu."""
         profile = QWebEngineProfile.defaultProfile()
         profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
 
@@ -102,12 +144,8 @@ class SystrayApp:
         page.loadFinished.connect(self._on_page_loaded)
         self.webview.load(QUrl(url))
 
-        # Use QDialog with Qt.Popup — closes on outside click and Escape
-        # natively, unlike QMenu + QWidgetAction which fights QWebEngineView.
         self._popup = QDialog()
-        self._popup.setWindowFlags(
-            Qt.Popup | Qt.FramelessWindowHint
-        )
+        self._popup.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
         self._popup.setAttribute(Qt.WA_DeleteOnClose, False)
         self._popup.setFixedSize(
             self.config.panel_width, self.config.panel_height
@@ -119,6 +157,10 @@ class SystrayApp:
         layout = QVBoxLayout(self._popup)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.webview)
+
+        self._dismiss = PopupDismissFilter(self._popup, self.webview)
+        self._click_out = ClickCatcher(self._popup)
+        self.app.installEventFilter(self._click_out)
 
     def _on_page_loaded(self, ok: bool) -> None:
         log.info("page loaded: ok=%s", ok)
@@ -213,9 +255,8 @@ class SystrayApp:
             log.debug("popup at (%d,%d)", x, y)
 
             self._popup.move(x, y)
+            self._popup.show()
             self._panel_open = True
-            self._popup.exec()
-            self._panel_open = False
 
     def _quit(self) -> None:
         log.info("quitting")
