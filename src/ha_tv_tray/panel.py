@@ -81,6 +81,7 @@ class RemoteWindow(QMainWindow):
         profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
 
         self._inject_auth_script(profile)
+        self._inject_hide_header(profile)
         self._setup_interceptor(profile)
 
         self.webview = QWebEngineView()
@@ -112,6 +113,27 @@ class RemoteWindow(QMainWindow):
         if title == ESC_MARKER and self._panel_open:
             log.debug("Escape from webview, closing")
             self.hide_slide()
+
+    def _inject_hide_header(self, profile: QWebEngineProfile) -> None:
+        css = """
+            ha-app-header, ha-top-app-bar-fixed,
+            .app-header, .header,
+            ha-sidebar { display: none !important; }
+            /* Let content use full width */
+            .view-container, ha-panel-lovelace,
+            partial-view { margin-left: 0 !important; }
+        """
+        script = QWebEngineScript()
+        script.setName("ha_hide_header")
+        script.setWorldId(QWebEngineScript.MainWorld)
+        script.setInjectionPoint(QWebEngineScript.DocumentReady)
+        script.setRunsOnSubFrames(False)
+        script.setSourceCode(f"""
+            const s = document.createElement('style');
+            s.textContent = {json.dumps(css)};
+            document.documentElement.appendChild(s);
+        """)
+        profile.scripts().insert(script)
 
     def _inject_auth_script(self, profile: QWebEngineProfile) -> None:
         tokens = {
