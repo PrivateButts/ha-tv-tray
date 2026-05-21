@@ -38,8 +38,8 @@ class AuthInterceptor(QWebEngineUrlRequestInterceptor):
             )
 
 
-class DismissFilter(QObject):
-    """Closes the menu on Escape (from webview) or WindowDeactivate."""
+class EscapeFilter(QObject):
+    """Close the popup menu when Escape is pressed inside the webview."""
 
     def __init__(self, menu: QMenu, webview: QWebEngineView) -> None:
         super().__init__(menu)
@@ -50,25 +50,6 @@ class DismissFilter(QObject):
         if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
             self.menu.close()
             return True
-        return False
-
-
-class ClickCatcher(QObject):
-    """Close menu on mouse press outside its geometry."""
-
-    def __init__(self, menu: QMenu) -> None:
-        super().__init__()
-        self.menu = menu
-
-    def eventFilter(self, obj, event) -> bool:
-        if (
-            self.menu.isVisible()
-            and event.type() == QEvent.MouseButtonPress
-        ):
-            pos = event.globalPosition().toPoint()
-            if not self.menu.geometry().contains(pos):
-                log.debug("click outside menu, closing")
-                self.menu.close()
         return False
 
 
@@ -145,9 +126,7 @@ class SystrayApp:
         action.setDefaultWidget(self.webview)
         self._popup.addAction(action)
 
-        self._dismiss = DismissFilter(self._popup, self.webview)
-        self._click_out = ClickCatcher(self._popup)
-        self.app.installEventFilter(self._click_out)
+        self._escape = EscapeFilter(self._popup, self.webview)
 
     def _on_page_loaded(self, ok: bool) -> None:
         log.info("page loaded: ok=%s", ok)
