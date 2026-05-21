@@ -80,11 +80,16 @@ class SystrayApp:
         self._dismiss_timer.stop()
 
     def _check_dismiss(self) -> None:
+        log.debug("tick: open=%s visible=%s", self._panel_open, self._popup.isVisible())
         if not self._panel_open or not self._popup.isVisible():
             self._dismiss_timer.stop()
             return
         cursor = QCursor.pos()
-        if not self._popup.geometry().contains(cursor):
+        geo = self._popup.geometry()
+        log.debug("cursor=(%d,%d) geo=(%d,%d %dx%d)",
+                  cursor.x(), cursor.y(),
+                  geo.x(), geo.y(), geo.width(), geo.height())
+        if not geo.contains(cursor):
             log.debug("cursor outside popup, closing")
             self._popup.close()
 
