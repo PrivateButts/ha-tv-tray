@@ -1,4 +1,3 @@
-import ctypes
 import json
 import logging
 import os
@@ -6,8 +5,8 @@ import signal
 import struct
 import sys
 
-from PySide6.QtCore import QAbstractNativeEventFilter, QEvent, QObject, QPoint, QTimer, QUrl, Qt
-from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap, QCursor
+from PySide6.QtCore import QAbstractNativeEventFilter, QObject, QPoint, QTimer, QUrl, Qt
+from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap, QCursor, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QSystemTrayIcon,
@@ -42,57 +41,42 @@ class AuthInterceptor(QWebEngineUrlRequestInterceptor):
             )
 
 
-class MenuEventFilter(QObject):
-    """Catches Escape key on the QMenu itself."""
-
-    def __init__(self, menu: QMenu) -> None:
-        super().__init__(menu)
-        self.menu = menu
-        menu.installEventFilter(self)
-
-    def eventFilter(self, obj, event) -> bool:
-        if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
-            self.menu.close()
-            return True
-        return False
-
-
 class NativeClickCatcher(QAbstractNativeEventFilter):
-    """Platform-level XCB event filter: close menu on outside button press."""
+    """Close menu when X reports a button press outside the menu window."""
 
     def __init__(self, menu: QMenu) -> None:
         super().__init__()
         self.menu = menu
+        log.info("NativeClickCatcher installed")
 
     def nativeEventFilter(self, event_type: bytes, message) -> object:
         if event_type != b"xcb_generic_event_t":
             return (False, 0)
 
-        # XCB event header: response_type (u8), pad (u8), sequence (u16)
-        data = bytes(message)
-        if len(data) < 4:
+        if not self.menu.isVisible():
             return (False, 0)
 
-        ev_type = data[0]
+        data = message  # sip.voidptr
+        ev_type = data[0] if hasattr(data, "__getitem__") else ord(bytes(data)[:1])
         if ev_type != XCB_BUTTON_PRESS:
             return (False, 0)
 
-        # XCB button press event layout (32 bytes):
-        # offset 0: response_type (1) + pad (1) + sequence (2)
-        # offset 4: event (4) = window ID where the event occurred
-        if len(data) < 8:
+        # xcb_button_press_event_t layout (32 bytes):
+        #   0: response_type (1) + detail (1) + sequence (2)
+        #   4: time (4) — xcb_timestamp_t
+        #   8: root (4)   — xcb_window_t
+        #  12: event (4)  — xcb_window_t  ← the window the event occurred on
+        event_raw = bytes(data) if hasattr(data, "__getitem__") else data
+
+        if len(event_raw) < 16:
             return (False, 0)
 
-        win_id = struct.unpack_from("<I", data, 4)[0]
+        win_id = struct.unpack_from("<I", event_raw, 12)[0]
+        menu_win = int(self.menu.windowHandle().winId()) if self.menu.windowHandle() else 0
 
-        # Check if the click was inside the menu
-        if self.menu.isVisible():
-            menu_win = self.menu.windowHandle()
-            if menu_win is not None and win_id != 0:
-                click_on_menu = win_id == int(menu_win.winId())
-                if not click_on_menu:
-                    log.debug("native: click outside menu, closing")
-                    self.menu.close()
+        if win_id and win_id != menu_win:
+            log.debug("native: click on window 0x%x (menu=0x%x), closing", win_id, menu_win)
+            QTimer.singleShot(0, self.menu.close)
 
         return (False, 0)
 
@@ -174,7 +158,7 @@ class SystrayApp:
         self._popup.addAction(action)
 
         self._popup.aboutToHide.connect(self._reset_panel)
-        MenuEventFilter(self._popup)
+        QShortcut(QKeySequence(Qt.Key_Escape), self._popup, self._popup.close)
 
         self._native_click = NativeClickCatcher(self._popup)
         self.app.installNativeEventFilter(self._native_click)
