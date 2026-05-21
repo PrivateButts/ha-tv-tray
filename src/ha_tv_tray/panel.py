@@ -4,13 +4,14 @@ import os
 import signal
 import sys
 
-from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
+from PySide6.QtCore import QEvent, QPoint, QTimer, QUrl, Qt
 from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap, QCursor, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
+    QMainWindow,
     QSystemTrayIcon,
     QMenu,
-    QWidgetAction,
+    QVBoxLayout,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import (
@@ -40,62 +41,61 @@ class AuthInterceptor(QWebEngineUrlRequestInterceptor):
             )
 
 
-class SystrayApp:
+class RemoteWindow(QMainWindow):
+    """Frameless tool window holding the webview. Closes on WindowDeactivate."""
+
     def __init__(self, config: Config) -> None:
+        super().__init__()
         self.config = config
-
-        if os.environ.get("XDG_SESSION_TYPE") == "wayland":
-            os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-            log.info("Wayland detected, forcing Qt platform to xcb")
-
-        self.app = QApplication(sys.argv)
-        log.info("Qt platform: %s", QApplication.platformName())
-        self.app.setApplicationName("HA TV Tray")
-        self.app.setOrganizationName("ha-tv-tray")
-
-        self._setup_signal_handling()
-        self._setup_tick_timer()
-
-        self._setup_webengine()
-
-        self._tray_menu = QMenu()
-        show_act = self._tray_menu.addAction("Show/Hide Remote")
-        show_act.triggered.connect(self._toggle_panel)
-        self._tray_menu.addSeparator()
-        quit_act = self._tray_menu.addAction("Quit")
-        quit_act.triggered.connect(self._quit)
-
-        self.tray = QSystemTrayIcon()
-        self.tray.setIcon(self._make_icon())
-        self.tray.setToolTip("TV Remote")
-        self.tray.activated.connect(self._on_tray_activated)
-        self.tray.setContextMenu(self._tray_menu)
-        QTimer.singleShot(0, self.tray.show)
-
-        self.app.focusChanged.connect(self._on_focus_changed)
-        self.app.applicationStateChanged.connect(self._on_app_state)
-
-        self._panel_open = False
-        log.info("tray icon shown")
-
-    # -- Dismissal ----------------------------------------------------------
-
-    def _reset_panel(self) -> None:
         self._panel_open = False
 
-    def _on_focus_changed(self, old, new) -> None:
-        if self._panel_open and new is None:
-            log.debug("focus left app, closing")
-            self._popup.close()
+        self.setWindowTitle("TV Remote")
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.Tool
+        )
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
 
-    def _on_app_state(self, state: Qt.ApplicationState) -> None:
-        if self._panel_open and state == Qt.ApplicationInactive:
-            log.debug("app inactive, closing")
-            self._popup.close()
+        self.setStyleSheet(
+            "RemoteWindow { background: palette(window); "
+            "border: 1px solid palette(mid); }"
+        )
+
+        self._setup_webview()
+        self._setup_ui()
+
+        esc = QShortcut(QKeySequence(Qt.Key_Escape), self,
+                        context=Qt.ApplicationShortcut)
+        esc.activated.connect(self._on_escape)
+        esc.activatedAmbiguously.connect(self._on_escape)
+
+    def _on_escape(self) -> None:
+        if self._panel_open:
+            log.debug("Escape, closing")
+            self.hide_slide()
+
+    def _setup_webview(self) -> None:
+        profile = QWebEngineProfile.defaultProfile()
+        profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
+
+        self._inject_auth_script(profile)
+        self._setup_interceptor(profile)
+
+        self.webview = QWebEngineView()
+        page = self.webview.page()
+        page.certificateError.connect(
+            lambda error: error.acceptCertificate()
+        )
+        page.titleChanged.connect(self._on_title_changed)
+        page.loadFinished.connect(self._on_page_loaded)
+
+        url = f"{self.config.ha_url}{self.config.dashboard_path}"
+        log.info("loading HA dashboard: %s", url)
+        self.webview.load(QUrl(url))
 
     def _on_page_loaded(self, ok: bool) -> None:
         log.info("page loaded: ok=%s", ok)
-        # Inject Escape handler — capture phase fires before Chromium's own handlers
         if ok:
             self.webview.page().runJavaScript(f"""
                 document.addEventListener('keydown', function(e) {{
@@ -110,53 +110,7 @@ class SystrayApp:
     def _on_title_changed(self, title: str) -> None:
         if title == ESC_MARKER and self._panel_open:
             log.debug("Escape from webview, closing")
-            self._popup.close()
-
-    # -- WebEngine setup ----------------------------------------------------
-
-    def _setup_webengine(self) -> None:
-        profile = QWebEngineProfile.defaultProfile()
-        profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
-
-        self._inject_auth_script(profile)
-        self._setup_interceptor(profile)
-
-        self.webview = QWebEngineView()
-        self.webview.setFixedSize(
-            self.config.panel_width, self.config.panel_height
-        )
-        page = self.webview.page()
-        page.certificateError.connect(
-            lambda error: error.acceptCertificate()
-        )
-        page.titleChanged.connect(self._on_title_changed)
-        page.loadFinished.connect(self._on_page_loaded)
-
-        url = f"{self.config.ha_url}{self.config.dashboard_path}"
-        log.info("loading HA dashboard: %s", url)
-        self.webview.load(QUrl(url))
-
-        self._popup = QMenu()
-        self._popup.setObjectName("remote-popup")
-        self._popup.setStyleSheet("""
-            #remote-popup {
-                border: 1px solid palette(mid);
-                background: palette(window);
-            }
-        """)
-        self._popup.setFixedSize(
-            self.config.panel_width, self.config.panel_height
-        )
-        action = QWidgetAction(self._popup)
-        action.setDefaultWidget(self.webview)
-        self._popup.addAction(action)
-
-        self._popup.aboutToHide.connect(self._reset_panel)
-
-        esc = QShortcut(QKeySequence(Qt.Key_Escape), self._popup,
-                        context=Qt.ApplicationShortcut)
-        esc.activated.connect(self._popup.close)
-        esc.activatedAmbiguously.connect(self._popup.close)
+            self.hide_slide()
 
     def _inject_auth_script(self, profile: QWebEngineProfile) -> None:
         tokens = {
@@ -185,7 +139,77 @@ class SystrayApp:
         )
         profile.setUrlRequestInterceptor(interceptor)
 
-    # -- Tray icon ----------------------------------------------------------
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.webview)
+        self.setFixedSize(self.config.panel_width, self.config.panel_height)
+
+    # -- Show / hide --------------------------------------------------------
+
+    def show_slide(self) -> None:
+        self.setFixedSize(self.config.panel_width, self.config.panel_height)
+        screen = QApplication.primaryScreen().availableGeometry()
+        margin = 8
+        w = self.width()
+        h = self.height()
+        x = screen.right() - w - margin
+        y = screen.bottom() - h - margin
+        log.debug("showing at (%d,%d)", x, y)
+
+        self.move(x, y)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.webview.setFocus()
+        self._panel_open = True
+
+    def hide_slide(self) -> None:
+        log.debug("hiding")
+        self.hide()
+        self._panel_open = False
+
+    def changeEvent(self, e) -> None:
+        if e.type() == QEvent.WindowDeactivate and self._panel_open:
+            log.debug("window deactivated, closing")
+            self.hide_slide()
+        super().changeEvent(e)
+
+
+class SystrayApp:
+    def __init__(self, config: Config) -> None:
+        self.config = config
+
+        if os.environ.get("XDG_SESSION_TYPE") == "wayland":
+            os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+            log.info("Wayland detected, forcing Qt platform to xcb")
+
+        self.app = QApplication(sys.argv)
+        log.info("Qt platform: %s", QApplication.platformName())
+        self.app.setApplicationName("HA TV Tray")
+        self.app.setOrganizationName("ha-tv-tray")
+
+        self._setup_signal_handling()
+        self._setup_tick_timer()
+
+        self.panel = RemoteWindow(config)
+
+        self._tray_menu = QMenu()
+        show_act = self._tray_menu.addAction("Show/Hide Remote")
+        show_act.triggered.connect(self._toggle_panel)
+        self._tray_menu.addSeparator()
+        quit_act = self._tray_menu.addAction("Quit")
+        quit_act.triggered.connect(self._quit)
+
+        self.tray = QSystemTrayIcon()
+        self.tray.setIcon(self._make_icon())
+        self.tray.setToolTip("TV Remote")
+        self.tray.activated.connect(self._on_tray_activated)
+        self.tray.setContextMenu(self._tray_menu)
+        QTimer.singleShot(0, self.tray.show)
+
+        log.info("tray icon shown")
 
     def _make_icon(self) -> QIcon:
         icon = QIcon.fromTheme("video-television")
@@ -220,6 +244,13 @@ class SystrayApp:
         ):
             self._toggle_panel()
 
+    def _toggle_panel(self) -> None:
+        log.debug("toggle panel")
+        if self.panel._panel_open:
+            self.panel.hide_slide()
+        else:
+            self.panel.show_slide()
+
     def _setup_signal_handling(self) -> None:
         for s in (signal.SIGINT, signal.SIGTERM):
             signal.signal(s, self._handle_signal)
@@ -233,28 +264,10 @@ class SystrayApp:
         self._tick_timer.timeout.connect(lambda: None)
         self._tick_timer.start(200)
 
-    def _toggle_panel(self) -> None:
-        log.debug("toggle panel")
-        if self._panel_open:
-            self._popup.close()
-        else:
-            screen = QApplication.primaryScreen().availableGeometry()
-            margin = 8
-            w = self._popup.width()
-            h = self._popup.height()
-            x = screen.right() - w - margin
-            y = screen.bottom() - h - margin
-            log.debug("popup at (%d,%d)", x, y)
-
-            self._popup.popup(QPoint(x, y))
-            self.webview.setFocus()
-            self._panel_open = True
-
     def _quit(self) -> None:
         log.info("quitting")
         self._tick_timer.stop()
-        if self._popup:
-            self._popup.close()
+        self.panel.close()
         QTimer.singleShot(0, self.app.quit)
 
     def run(self) -> int:
