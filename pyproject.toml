@@ -1,6 +1,6 @@
 [project]
 name = "ha-tv-tray"
-version = "0.3.7"
+version = "0.3.8"
 description = "KDE system tray TV remote control via Home Assistant"
 authors = [{ name = "ha-tv-tray" }]
 license = { text = "MIT" }

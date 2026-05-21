@@ -23,11 +23,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Enable debug logging",
     )
     parser.add_argument(
-        "--browser",
-        action="store_true",
-        help="Open HA dashboard in system browser instead of embedded panel",
-    )
-    parser.add_argument(
         "--version",
         "-V",
         action="version",
@@ -101,7 +96,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Config error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    app = SystrayApp(config, browser_mode=args.browser)
+    app = SystrayApp(config)
     sys.exit(app.run())
 
 
