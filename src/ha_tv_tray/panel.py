@@ -90,6 +90,9 @@ class SystrayApp:
 
     # -- WebEngine setup ----------------------------------------------------
 
+    def _reset_panel(self) -> None:
+        self._panel_open = False
+
     def _setup_webengine(self) -> None:
         profile = QWebEngineProfile.defaultProfile()
         profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.MemoryHttpCache)
@@ -127,6 +130,7 @@ class SystrayApp:
         self._popup.addAction(action)
 
         self._escape = EscapeFilter(self._popup, self.webview)
+        self._popup.aboutToHide.connect(self._reset_panel)
 
     def _on_page_loaded(self, ok: bool) -> None:
         log.info("page loaded: ok=%s", ok)
@@ -210,7 +214,6 @@ class SystrayApp:
         log.debug("toggle panel")
         if self._panel_open:
             self._popup.close()
-            self._panel_open = False
         else:
             screen = QApplication.primaryScreen().availableGeometry()
             margin = 8
@@ -221,6 +224,7 @@ class SystrayApp:
             log.debug("popup at (%d,%d)", x, y)
 
             self._popup.popup(QPoint(x, y))
+            self.webview.setFocus()
             self._panel_open = True
 
     def _quit(self) -> None:
