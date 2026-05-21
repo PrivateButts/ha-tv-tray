@@ -42,11 +42,21 @@ class SystrayApp:
     def __init__(self, config: Config) -> None:
         self.config = config
 
-        log.info("session type: %s", os.environ.get("XDG_SESSION_TYPE", "unknown"))
+        # On Wayland, xdg-shell blocks popups without a transient parent
+        # that has received input.  Our tray icon (D-Bus StatusNotifierItem)
+        # has no Wayland surface, so we force XCB via XWayland.
+        if os.environ.get("XDG_SESSION_TYPE") == "wayland":
+            os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+            log.info("Wayland detected, forcing Qt platform to xcb")
 
         self.app = QApplication(sys.argv)
+        log.info("Qt platform: %s", QApplication.platformName())
+
         self.app.setApplicationName("HA TV Tray")
         self.app.setOrganizationName("ha-tv-tray")
+
+        self._setup_signal_handling()
+        self._setup_tick_timer()
 
         self._setup_webengine()
 
@@ -64,9 +74,7 @@ class SystrayApp:
         self.tray.setContextMenu(self._tray_menu)
         QTimer.singleShot(0, self.tray.show)
 
-        self._setup_signal_handling()
         self._panel_open = False
-
         log.info("tray icon shown")
 
     # -- WebEngine setup ----------------------------------------------------
@@ -172,6 +180,19 @@ class SystrayApp:
         ):
             self._toggle_panel()
 
+    def _setup_signal_handling(self) -> None:
+        for s in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(s, self._handle_signal)
+
+    def _handle_signal(self, signum: int, _frame) -> None:
+        log.warning("received signal %d, quitting", signum)
+        self._quit()
+
+    def _setup_tick_timer(self) -> None:
+        self._tick_timer = QTimer()
+        self._tick_timer.timeout.connect(lambda: None)
+        self._tick_timer.start(200)
+
     def _toggle_panel(self) -> None:
         log.debug("toggle panel")
         if self._panel_open:
@@ -195,9 +216,10 @@ class SystrayApp:
 
     def _quit(self) -> None:
         log.info("quitting")
+        self._tick_timer.stop()
         if self._popup:
             self._popup.close()
-        self.app.quit()
+        QTimer.singleShot(0, self.app.quit)
 
     def run(self) -> int:
         return self.app.exec()
