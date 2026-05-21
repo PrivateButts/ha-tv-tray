@@ -4,13 +4,14 @@ import os
 import signal
 import sys
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QTimer, QUrl, Qt
+from PySide6.QtCore import QTimer, QUrl, Qt
 from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap, QCursor
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QSystemTrayIcon,
     QMenu,
-    QWidgetAction,
+    QVBoxLayout,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import (
@@ -36,20 +37,6 @@ class AuthInterceptor(QWebEngineUrlRequestInterceptor):
             info.setHttpHeader(
                 b"Authorization", f"Bearer {self.token}".encode()
             )
-
-
-class EscapeCatcher(QObject):
-    """Forward Escape key from the web view to close the popup."""
-
-    def __init__(self, menu: QMenu) -> None:
-        super().__init__()
-        self.menu = menu
-
-    def eventFilter(self, obj, event) -> bool:
-        if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
-            self.menu.close()
-            return True
-        return False
 
 
 class SystrayApp:
@@ -115,25 +102,23 @@ class SystrayApp:
         page.loadFinished.connect(self._on_page_loaded)
         self.webview.load(QUrl(url))
 
-        # Embed in a QMenu — QMenu uses the compositor's popup protocol
-        # so positioning is handled natively (even on Wayland).
-        self._popup = QMenu()
-        self._popup.setObjectName("remote-popup")
-        self._popup.setStyleSheet("""
-            #remote-popup {
-                border: 1px solid palette(mid);
-                background: palette(window);
-            }
-        """)
+        # Use QDialog with Qt.Popup — closes on outside click and Escape
+        # natively, unlike QMenu + QWidgetAction which fights QWebEngineView.
+        self._popup = QDialog()
+        self._popup.setWindowFlags(
+            Qt.Popup | Qt.FramelessWindowHint
+        )
+        self._popup.setAttribute(Qt.WA_DeleteOnClose, False)
         self._popup.setFixedSize(
             self.config.panel_width, self.config.panel_height
         )
-        action = QWidgetAction(self._popup)
-        action.setDefaultWidget(self.webview)
-        self._popup.addAction(action)
-
-        self._escape = EscapeCatcher(self._popup)
-        self.webview.installEventFilter(self._escape)
+        self._popup.setStyleSheet(
+            "QDialog { background: palette(window); "
+            "border: 1px solid palette(mid); }"
+        )
+        layout = QVBoxLayout(self._popup)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.webview)
 
     def _on_page_loaded(self, ok: bool) -> None:
         log.info("page loaded: ok=%s", ok)
@@ -220,20 +205,16 @@ class SystrayApp:
             self._panel_open = False
         else:
             screen = QApplication.primaryScreen().availableGeometry()
-            cursor = QCursor.pos()
             margin = 8
+            w = self._popup.width()
+            h = self._popup.height()
+            x = screen.right() - w - margin
+            y = screen.bottom() - h - margin
+            log.debug("popup at (%d,%d)", x, y)
 
-            near_right = cursor.x() > screen.width() // 2
-            near_bottom = cursor.y() > screen.height() // 2
-
-            x = screen.right() - self._popup.width() - margin if near_right else margin
-            y = screen.bottom() - self._popup.height() - margin if near_bottom else 26
-
-            pos = QPoint(x, y)
-            log.debug("popup at (%d,%d), cursor was (%d,%d)", x, y, cursor.x(), cursor.y())
-
+            self._popup.move(x, y)
             self._panel_open = True
-            self._popup.exec(pos)
+            self._popup.exec()
             self._panel_open = False
 
     def _quit(self) -> None:
