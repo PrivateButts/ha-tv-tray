@@ -178,12 +178,12 @@ class SystrayApp:
             self._popup.close()
             self._panel_open = False
         else:
-            # Position near cursor (which is near the tray on click)
-            pos = QCursor.pos()
-            # QMenu.popup() with a position near the tray edge
-            # The compositor handles correct placement
-            self._popup.popup(pos)
+            # Use exec() instead of popup() — on Wayland popup() fails
+            # without a transient parent. exec() handles the parent
+            # relationship via the current focus window.
             self._panel_open = True
+            self._popup.exec(QCursor.pos())
+            self._panel_open = False
 
     def _setup_signal_handling(self) -> None:
         for s in (signal.SIGINT, signal.SIGTERM):
