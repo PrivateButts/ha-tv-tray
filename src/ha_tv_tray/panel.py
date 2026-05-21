@@ -55,6 +55,7 @@ class SystrayApp:
         self._setup_tick_timer()
 
         self.app.focusChanged.connect(self._on_focus_changed)
+        self.app.applicationStateChanged.connect(self._on_app_state)
 
         self._setup_webengine()
 
@@ -83,6 +84,11 @@ class SystrayApp:
     def _on_focus_changed(self, old, new) -> None:
         if self._panel_open and new is None:
             log.debug("focus left app, closing popup")
+            self._popup.close()
+
+    def _on_app_state(self, state: Qt.ApplicationState) -> None:
+        if self._panel_open and state == Qt.ApplicationInactive:
+            log.debug("app inactive, closing popup")
             self._popup.close()
 
     def _setup_webengine(self) -> None:
@@ -123,9 +129,10 @@ class SystrayApp:
 
         self._popup.aboutToHide.connect(self._reset_panel)
 
-        # Escape via ApplicationShortcut — fires on any keyboard input, not just when the menu has focus
-        QShortcut(QKeySequence(Qt.Key_Escape), self._popup, self._popup.close,
-                  context=Qt.ApplicationShortcut)
+        esc = QShortcut(QKeySequence(Qt.Key_Escape), self._popup,
+                        context=Qt.ApplicationShortcut)
+        esc.activated.connect(self._popup.close)
+        esc.activatedAmbiguously.connect(self._popup.close)
 
     def _on_page_loaded(self, ok: bool) -> None:
         log.info("page loaded: ok=%s", ok)
