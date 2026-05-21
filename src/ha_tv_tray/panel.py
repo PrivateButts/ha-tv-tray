@@ -24,6 +24,20 @@ from .config import Config
 log = logging.getLogger("ha-tv-tray")
 
 
+class AuthInterceptor(QWebEngineUrlRequestInterceptor):
+    def __init__(self, ha_url: str, token: str) -> None:
+        super().__init__()
+        self.ha_url = ha_url.rstrip("/")
+        self.token = token
+
+    def interceptRequest(self, info) -> None:
+        url = info.requestUrl().toString()
+        if url.startswith(self.ha_url):
+            info.setHttpHeader(
+                b"Authorization", f"Bearer {self.token}".encode()
+            )
+
+
 class SystrayApp:
     def __init__(self, config: Config) -> None:
         self.config = config
