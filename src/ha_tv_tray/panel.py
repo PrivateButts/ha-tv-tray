@@ -8,10 +8,10 @@ from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt
 from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap, QCursor
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
     QSystemTrayIcon,
     QMenu,
     QVBoxLayout,
+    QWidget,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import (
@@ -42,7 +42,7 @@ class AuthInterceptor(QWebEngineUrlRequestInterceptor):
 class PopupDismissFilter(QObject):
     """Closes the popup on click-outside, WindowDeactivate, or Escape."""
 
-    def __init__(self, popup: QDialog, webview: QWebEngineView) -> None:
+    def __init__(self, popup: QWidget, webview: QWebEngineView) -> None:
         super().__init__(popup)
         self.popup = popup
         webview.installEventFilter(self)
@@ -70,7 +70,7 @@ class PopupDismissFilter(QObject):
 class ClickCatcher(QObject):
     """Application-level: close popup on any mouse press outside its rect."""
 
-    def __init__(self, popup: QDialog) -> None:
+    def __init__(self, popup: QWidget) -> None:
         super().__init__()
         self.popup = popup
 
@@ -144,14 +144,16 @@ class SystrayApp:
         page.loadFinished.connect(self._on_page_loaded)
         self.webview.load(QUrl(url))
 
-        self._popup = QDialog()
-        self._popup.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        self._popup = QWidget()
+        self._popup.setWindowFlags(
+            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        )
         self._popup.setAttribute(Qt.WA_DeleteOnClose, False)
         self._popup.setFixedSize(
             self.config.panel_width, self.config.panel_height
         )
         self._popup.setStyleSheet(
-            "QDialog { background: palette(window); "
+            "QWidget { background: palette(window); "
             "border: 1px solid palette(mid); }"
         )
         layout = QVBoxLayout(self._popup)
