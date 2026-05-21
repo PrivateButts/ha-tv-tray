@@ -4,7 +4,7 @@ import os
 import signal
 import sys
 
-from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QTimer, QUrl, Qt
 from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap, QCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -36,6 +36,20 @@ class AuthInterceptor(QWebEngineUrlRequestInterceptor):
             info.setHttpHeader(
                 b"Authorization", f"Bearer {self.token}".encode()
             )
+
+
+class EscapeCatcher(QObject):
+    """Forward Escape key from the web view to close the popup."""
+
+    def __init__(self, menu: QMenu) -> None:
+        super().__init__()
+        self.menu = menu
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+            self.menu.close()
+            return True
+        return False
 
 
 class SystrayApp:
@@ -111,9 +125,15 @@ class SystrayApp:
                 background: palette(window);
             }
         """)
+        self._popup.setFixedSize(
+            self.config.panel_width, self.config.panel_height
+        )
         action = QWidgetAction(self._popup)
         action.setDefaultWidget(self.webview)
         self._popup.addAction(action)
+
+        self._escape = EscapeCatcher(self._popup)
+        self.webview.installEventFilter(self._escape)
 
     def _on_page_loaded(self, ok: bool) -> None:
         log.info("page loaded: ok=%s", ok)
@@ -199,20 +219,22 @@ class SystrayApp:
             self._popup.close()
             self._panel_open = False
         else:
-            # Use exec() instead of popup() — on Wayland popup() fails
-            # without a transient parent. exec() handles the parent
-            # relationship via the current focus window.
+            screen = QApplication.primaryScreen().availableGeometry()
+            cursor = QCursor.pos()
+            margin = 8
+
+            near_right = cursor.x() > screen.width() // 2
+            near_bottom = cursor.y() > screen.height() // 2
+
+            x = screen.right() - self._popup.width() - margin if near_right else margin
+            y = screen.bottom() - self._popup.height() - margin if near_bottom else 26
+
+            pos = QPoint(x, y)
+            log.debug("popup at (%d,%d), cursor was (%d,%d)", x, y, cursor.x(), cursor.y())
+
             self._panel_open = True
-            self._popup.exec(QCursor.pos())
+            self._popup.exec(pos)
             self._panel_open = False
-
-    def _setup_signal_handling(self) -> None:
-        for s in (signal.SIGINT, signal.SIGTERM):
-            signal.signal(s, self._handle_signal)
-
-    def _handle_signal(self, signum: int, _frame) -> None:
-        log.warning("received signal %d, quitting", signum)
-        self._quit()
 
     def _quit(self) -> None:
         log.info("quitting")
