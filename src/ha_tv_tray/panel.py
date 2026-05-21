@@ -2,10 +2,9 @@ import json
 import logging
 import os
 import signal
-import struct
 import sys
 
-from PySide6.QtCore import QAbstractNativeEventFilter, QObject, QPoint, QTimer, QUrl, Qt
+from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
 from PySide6.QtGui import QIcon, QPainter, QColor, QPixmap, QCursor, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -23,88 +22,6 @@ from PySide6.QtWebEngineCore import (
 from .config import Config
 
 log = logging.getLogger("ha-tv-tray")
-
-XCB_BUTTON_PRESS = 4
-
-
-class AuthInterceptor(QWebEngineUrlRequestInterceptor):
-    def __init__(self, ha_url: str, token: str) -> None:
-        super().__init__()
-        self.ha_url = ha_url.rstrip("/")
-        self.token = token
-
-    def interceptRequest(self, info) -> None:
-        url = info.requestUrl().toString()
-        if url.startswith(self.ha_url):
-            info.setHttpHeader(
-                b"Authorization", f"Bearer {self.token}".encode()
-            )
-
-
-class NativeClickCatcher(QAbstractNativeEventFilter):
-    """Close menu when X reports a button press outside the menu window."""
-
-    def __init__(self, menu: QMenu) -> None:
-        super().__init__()
-        self.menu = menu
-        log.info("NativeClickCatcher installed")
-
-    def nativeEventFilter(self, event_type: bytes, message) -> object:
-        if event_type != b"xcb_generic_event_t":
-            return (False, 0)
-
-        if not self.menu.isVisible():
-            return (False, 0)
-
-        # message is sip.voidptr or int (raw pointer)
-        ev_type = self._read_event_type(message)
-        if ev_type is None or ev_type != XCB_BUTTON_PRESS:
-            return (False, 0)
-
-        raw = self._read_event_bytes(message)
-        if raw is None or len(raw) < 16:
-            return (False, 0)
-
-        # xcb_button_press_event_t: event window ID at offset 12
-        win_id = struct.unpack_from("<I", raw, 12)[0]
-        menu_win = (
-            int(self.menu.windowHandle().winId())
-            if self.menu.windowHandle()
-            else 0
-        )
-
-        if win_id and win_id != menu_win:
-            log.debug("native: click on window 0x%x (menu=0x%x)", win_id, menu_win)
-            QTimer.singleShot(0, self.menu.close)
-
-        return (False, 0)
-
-    @staticmethod
-    def _read_event_type(msg) -> int | None:
-        """Safely read the first byte (XCB event type) from sip.voidptr or int."""
-        try:
-            return msg[0]
-        except TypeError:
-            pass
-        try:
-            return int(msg) & 0xFF
-        except (TypeError, ValueError):
-            pass
-        return None
-
-    @staticmethod
-    def _read_event_bytes(msg, n: int = 32) -> bytes | None:
-        """Safely read *n* bytes from sip.voidptr or int."""
-        try:
-            return msg.asstring(n)
-        except (AttributeError, TypeError):
-            pass
-        # Fallback: treat as sip.voidptr and index manually
-        try:
-            return bytes(msg[i] for i in range(n))
-        except (TypeError, AttributeError):
-            pass
-        return None
 
 
 class SystrayApp:
@@ -146,6 +63,16 @@ class SystrayApp:
 
     def _reset_panel(self) -> None:
         self._panel_open = False
+        self._dismiss_timer.stop()
+
+    def _check_dismiss(self) -> None:
+        if not self._panel_open or not self._popup.isVisible():
+            self._dismiss_timer.stop()
+            return
+        cursor = QCursor.pos()
+        if not self._popup.geometry().contains(cursor):
+            log.debug("cursor outside popup, closing")
+            self._popup.close()
 
     def _setup_webengine(self) -> None:
         profile = QWebEngineProfile.defaultProfile()
@@ -186,8 +113,9 @@ class SystrayApp:
         self._popup.aboutToHide.connect(self._reset_panel)
         QShortcut(QKeySequence(Qt.Key_Escape), self._popup, self._popup.close)
 
-        self._native_click = NativeClickCatcher(self._popup)
-        self.app.installNativeEventFilter(self._native_click)
+        self._dismiss_timer = QTimer()
+        self._dismiss_timer.setInterval(100)
+        self._dismiss_timer.timeout.connect(self._check_dismiss)
 
     def _on_page_loaded(self, ok: bool) -> None:
         log.info("page loaded: ok=%s", ok)
@@ -283,6 +211,7 @@ class SystrayApp:
             self._popup.popup(QPoint(x, y))
             self.webview.setFocus()
             self._panel_open = True
+            self._dismiss_timer.start()
 
     def _quit(self) -> None:
         log.info("quitting")
