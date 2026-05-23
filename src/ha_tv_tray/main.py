@@ -4,8 +4,9 @@ import sys
 
 from .config import load_config, write_config
 from .panel import SystrayApp
+from .service import install_service, uninstall_service, print_service_status
 
-VERSION = "0.3.5"
+VERSION = "0.4.1"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -13,8 +14,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="KDE system tray TV remote control via Home Assistant"
     )
     parser.add_argument(
-        "--config",
-        "-c",
+        "--config", "-c",
         help="Path to config.yaml (default: ~/.config/ha-tv-tray/config.yaml)",
     )
     parser.add_argument(
@@ -23,8 +23,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Enable debug logging",
     )
     parser.add_argument(
-        "--version",
-        "-V",
+        "--version", "-V",
         action="version",
         version=f"ha-tv-tray {VERSION}",
     )
@@ -46,6 +45,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Lovelace dashboard path (default: /lovelace/tv)",
     )
 
+    service = parser.add_argument_group("systemd user service")
+    service.add_argument(
+        "--install-service",
+        action="store_true",
+        help="Install and start a systemd --user service for ha-tv-tray",
+    )
+    service.add_argument(
+        "--uninstall-service",
+        action="store_true",
+        help="Stop and remove the systemd --user service",
+    )
+    service.add_argument(
+        "--service-status",
+        action="store_true",
+        help="Show the systemd --user service status",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -59,7 +75,7 @@ def _bootstrap(args: argparse.Namespace) -> None:
     print(f"  ha_url:          {url}")
     print(f"  dashboard_path:  {dash}")
     print()
-    print(f"Run \033[1mha-tv-tray\033[0m to start the systray app.")
+    print("Run \033[1mha-tv-tray\033[0m to start the systray app.")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -71,6 +87,18 @@ def main(argv: list[str] | None = None) -> None:
         format="%(levelname)s:%(name)s: %(message)s",
         stream=sys.stderr,
     )
+
+    if args.install_service:
+        install_service()
+        return
+
+    if args.uninstall_service:
+        uninstall_service()
+        return
+
+    if args.service_status:
+        print_service_status()
+        return
 
     if args.config_url or args.config_token:
         if not args.config_url:
